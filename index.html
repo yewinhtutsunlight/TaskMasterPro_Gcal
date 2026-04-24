@@ -74,9 +74,7 @@ async function gcalCreateEvent(token, item) {
   const hasTime = startT && startT.length>0;
   const body = {
     summary: item.title,
-    description: "[TaskMaster Pro] "+item.category+" "+item.type+(item.notes?"
-
-"+item.notes:""),
+    description: "[TaskMaster Pro] "+item.category+" "+item.type+(item.notes?"\n\n"+item.notes:""),
     ...(item.location ? {location:item.location} : {}),
     ...(hasTime ? {
       start:{ dateTime:`${item.dueDate}T${startT}:00+08:00`, timeZone:"Asia/Singapore" },
