@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<meta name="apple-mobile-web-app-title" content="TaskMaster Pro"/>
+<title>TaskMaster Pro</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;padding:0;background:#F1F5F9;font-family:'DM Sans','Segoe UI',sans-serif;}
+  input,textarea,button,select{font-family:inherit;}
+  /* prevent iOS zoom on input focus */
+  input[type="text"],input[type="date"],input[type="time"],textarea{font-size:16px!important;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React + Babel via CDN — no install needed -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Google Identity Services for OAuth 2.0 -->
+<script src="https://accounts.google.com/gsi/client" async></script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ─── STORAGE & CONFIG ─────────────────────────────────────────────────────────
+const STORAGE_KEY  = "taskmaster_v8";
+const SNOOZED_KEY  = "taskmaster_snoozed_v8";
+const USER_EMAIL   = "yewinhtut.sunlight@gmail.com";
+const GCAL_TOKEN_KEY = "taskmaster_gcal_token";
+
+// ─── GOOGLE OAUTH CONFIG ──────────────────────────────────────────────────────
+// STEP 1: Go to https://console.cloud.google.com
+// STEP 2: Create project → Enable "Google Calendar API"  
+// STEP 3: APIs & Services → Credentials → Create OAuth 2.0 Client ID (Web app)
+// STEP 4: Add your file path or hosting URL to "Authorized JavaScript Origins"
+//         e.g.  file:///  (for local file)  OR  https://yourdomain.com
+// STEP 5: Copy the Client ID and paste it below replacing YOUR_CLIENT_ID_HERE
+const GCAL_CLIENT_ID = "859742900088-8d3lfkantkgcsp23m1o06u52c02o2a5q.apps.googleusercontent.com";
+const GCAL_SCOPE     = "https://www.googleapis.com/auth/calendar";
+const GCAL_BASE      = "https://www.googleapis.com/calendar/v3";
+const IS_CONFIGURED  = !GCAL_CLIENT_ID.startsWith("YOUR_CLIENT");
+
+// ─── GOOGLE CALENDAR API HELPERS ──────────────────────────────────────────────
+async function gcalFetch(token, path, method="GET", body=null) {
+  const opts = { method, headers:{ Authorization:"Bearer "+token, "Content-Type":"application/json" } };
+  if(body) opts.body = JSON.stringify(body);
+  const res = await fetch(GCAL_BASE+path, opts);
+  if(!res.ok) throw new Error("GCal API error "+res.status);
+  if(res.status===204) return null;
+  return res.json();
+}
+
+async function gcalListEvents(token) {
+  const now = new Date(); now.setDate(now.getDate()-7);
+  const end = new Date(); end.setMonth(end.getMonth()+3);
+  const params = new URLSearchParams({
+    timeMin:now.toISOString(), timeMax:end.toISOString(),
+    singleEvents:"true", orderBy:"startTime", maxResults:"500"
+  });
+  const data = await gcalFetch(token, "/calendars/primary/events?"+params);
+  return (data.items||[]).filter(e=>e.status!=="cancelled");
+}
+
+async function gcalCreateEvent(token, item) {
+  const isApt = item.type==="appointment";
+  const startT = isApt ? item.startTime : item.dueTime;
+  const endT   = isApt ? item.endTime   : item.dueTime;
+  const hasTime = startT && startT.length>0;
+  const body = {
+    summary: item.title,
+    description: "[TaskMaster Pro] "+item.category+" "+item.type+(item.notes?"\n\n"+item.notes:""),
+    ...(item.location ? {location:item.location} : {}),
+    ...(hasTime ? {
+      start:{ dateTime:`${item.dueDate}T${startT}:00+08:00`, timeZone:"Asia/Singapore" },
+      end:  { dateTime:`${item.dueDate}T${endT}:00+08:00`,   timeZone:"Asia/Singapore" }
+    } : {
+      start:{ date:item.dueDate }, end:{ date:item.dueDate }
+    }),
+    reminders:{ useDefault:false, overrides:[{ method:"popup", minutes:30 }] },
+    extendedProperties:{ private:{ taskmaster_id:String(item.id), taskmaster_priority:item.priority } }
+  };
+  return gcalFetch(token, "/calendars/primary/events", "POST", body);
+}
+
+async function gcalDeleteEvent(token, gcalId) {
+  return gcalFetch(token, "/calendars/primary/events/"+gcalId, "DELETE");
+}
+
+function gcalEventToItem(ev) {
+  const dateStr = ev.start?.date || (ev.start?.dateTime||"").slice(0,10);
+  const startT  = ev.start?.dateTime ? (ev.start.dateTime||"").slice(11,16) : "";
+  const endT    = ev.end?.dateTime   ? (ev.end.dateTime||"").slice(11,16)   : "";
+  const isApt   = !!(startT && endT && startT!==endT);
+  const tid     = ev.extendedProperties?.private?.taskmaster_id;
+  return {
+    id: tid || ("gcal_"+ev.id),
+    gcalId: ev.id,
+    type: isApt ? "appointment" : "task",
+    category: "work",
+    title: ev.summary || "(No title)",
+    priority: ev.extendedProperties?.private?.taskmaster_priority || "medium",
+    dueDate: dateStr,
+    dueTime: isApt ? "" : startT,
+    startTime: isApt ? startT : "",
+    endTime: isApt ? endT : "",
+    location: ev.location || "",
+    notes: (ev.description||"").replace(/\[TaskMaster Pro\][^\n]*/,"").trim(),
+    recurrence: "none",
+    done: false,
+    fromGcal: true,
+    synced: true,
+    actionItems: [],
+    createdAt: ev.created || new Date().toISOString(),
+  };
+}
+
+// ─── REAL GCAL SEED ───────────────────────────────────────────────────────────
+const GCAL_SEED = [
+  { id:"fcm_0424", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-04-24", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"fcm_0501", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-01", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"fcm_0508", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-08", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"fcm_0515", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-15", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"fcm_0522", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-22", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"cck_0421", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-04-21", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"cck_0428", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-04-28", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"cck_0505", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-05-05", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"cck_0512", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-05-12", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+  { id:"wfm_0422", type:"appointment", category:"work", title:"Weekly Forecast Meeting", priority:"medium", dueDate:"2026-04-22", startTime:"10:00", endTime:"12:00", recurrence:"none", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
+];
+
+const PRIORITY = {
+  high:   { label:"HIGH",   color:"#DC2626", bg:"#FEF2F2", border:"#FECACA" },
+  medium: { label:"MED",    color:"#D97706", bg:"#FFFBEB", border:"#FDE68A" },
+  low:    { label:"LOW",    color:"#059669", bg:"#F0FDF4", border:"#BBF7D0" },
+};
+const CATEGORY = {
+  work:     { label:"Work",     icon:"💼", color:"#1D4ED8", bg:"#EFF6FF", border:"#BFDBFE" },
+  personal: { label:"Personal", icon:"🏠", color:"#7C3AED", bg:"#F5F3FF", border:"#DDD6FE" },
+};
+const RECURRENCE_OPTS = [
+  { value:"none", label:"None" }, { value:"daily", label:"Daily" },
+  { value:"weekly", label:"Weekly" }, { value:"mon-fri", label:"Mon–Fri" },
+  { value:"monthly", label:"Monthly" },
+];
+const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const DAYS_FULL  = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const MONTHS     = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const WORK_DAYS  = [1,2,3,4,5];
+const WORK_START = 9*60+30, WORK_END = 18*60, LUNCH_START = 12*60+30, LUNCH_END = 14*60;
+const ALARM_MINUTES = 30;
+
+const toKey    = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayKey = () => toKey(new Date());
+const sameDay  = (a,b) => a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
+const addDays  = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
+const toMins   = t => { if(!t) return 0; const[h,m]=t.split(":").map(Number); return h*60+m; };
+const toHHMM   = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+const fmt      = t => { if(!t) return ""; const[h,m]=t.split(":").map(Number); return `${h%12||12}:${String(m).padStart(2,'0')} ${h>=12?"PM":"AM"}`; };
+const durLabel = (t1,t2) => { const d=toMins(t2)-toMins(t1); if(d<=0) return ""; return d<60?`${d}m`:d%60?`${Math.floor(d/60)}h ${d%60}m`:`${Math.floor(d/60)}h`; };
+
+function getWeekDates(base) {
+  const s=new Date(base); s.setDate(s.getDate()-s.getDay()); s.setHours(0,0,0,0);
+  return Array.from({length:7},(_,i)=>{ const d=new Date(s); d.setDate(s.getDate()+i); return d; });
+}
+function findSlots(dateKey, appts) {
+  const d=new Date(dateKey); if(!WORK_DAYS.includes(d.getDay())) return [];
+  const busy=appts.filter(a=>a.dueDate===dateKey&&a.startTime&&a.endTime)
+    .map(a=>({s:toMins(a.startTime),e:toMins(a.endTime)}))
+    .concat([{s:LUNCH_START,e:LUNCH_END}]).sort((a,b)=>a.s-b.s);
+  const slots=[]; let cur=WORK_START;
+  for(const b of busy){ if(cur+60<=b.s) slots.push({s:cur,e:b.s}); cur=Math.max(cur,b.e); }
+  if(cur+60<=WORK_END) slots.push({s:cur,e:WORK_END});
+  return slots;
+}
+function generateSuggestions(tasks, allItems) {
+  const unscheduled=tasks.filter(t=>!t.done&&!t.dueTime&&t.type==="task");
+  const appts=allItems.filter(i=>i.type==="appointment");
+  const out=[]; const today=new Date();
+  for(const task of unscheduled.slice(0,6)){
+    const base=task.dueDate?new Date(task.dueDate):today;
+    for(let off=0;off<7;off++){
+      const tryDate=toKey(addDays(base,off)); const dd=new Date(tryDate);
+      if(!WORK_DAYS.includes(dd.getDay())) continue;
+      const slots=findSlots(tryDate,appts);
+      if(slots.length){ const sl=slots[0]; out.push({ taskId:task.id, taskTitle:task.title, priority:task.priority, sugDate:tryDate, sugStart:toHHMM(sl.s), sugEnd:toHHMM(Math.min(sl.s+60,sl.e)), dayLabel:off===0?"Today":off===1?"Tomorrow":DAYS_FULL[dd.getDay()] }); break; }
+    }
+  }
+  return out;
+}
+
+function getAlarmingItems(items, snoozedIds) {
+  const now=new Date(); const nowMins=now.getHours()*60+now.getMinutes(); const todayStr=todayKey();
+  return items.filter(item=>{
+    if(item.done||snoozedIds.has(item.id)) return false;
+    const qualifies=(item.type==="task"&&item.priority==="high")||item.type==="appointment";
+    if(!qualifies) return false;
+    const timeStr=item.type==="appointment"?item.startTime:item.dueTime;
+    if(!timeStr||item.dueDate!==todayStr) return false;
+    const minsUntil=toMins(timeStr)-nowMins;
+    return minsUntil>=0&&minsUntil<=ALARM_MINUTES;
+  });
+}
+function getOverdueItems(items) {
+  const now=new Date(); const nowMins=now.getHours()*60+now.getMinutes(); const todayStr=todayKey();
+  return items.filter(item=>{
+    if(item.done) return false;
+    const qualifies=(item.type==="task"&&item.priority==="high")||item.type==="appointment";
+    if(!qualifies) return false;
+    if(item.dueDate<todayStr) return true;
+    const timeStr=item.type==="appointment"?item.startTime:item.dueTime;
+    if(item.dueDate===todayStr&&timeStr) return toMins(timeStr)<nowMins;
+    return false;
+  });
+}
+async function sendBrowserNotification(title, body) {
+  if(!("Notification" in window)) return;
+  if(Notification.permission==="granted") new Notification(title,{body,tag:title});
+  else if(Notification.permission!=="denied"){ const p=await Notification.requestPermission(); if(p==="granted") new Notification(title,{body,tag:title}); }
+}
+
+function loadData() {
+  try {
+    const raw=localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      const d=JSON.parse(raw);
+      const seenIds=new Set();
+      const deduped=(d.items||[]).filter(i=>{ if(seenIds.has(i.id)) return false; seenIds.add(i.id); return true; });
+      const withActions=deduped.map(i=>({actionItems:[],...i}));
+      const newSeed=GCAL_SEED.filter(s=>!seenIds.has(s.id));
+      return { items:[...withActions,...newSeed], reminders:d.reminders||[] };
+    }
+    return { items:GCAL_SEED, reminders:[] };
+  } catch { return { items:GCAL_SEED, reminders:[] }; }
+}
+function saveData(d) { try { localStorage.setItem(STORAGE_KEY,JSON.stringify(d)); } catch {} }
+function loadSnoozed() { try { return new Set(JSON.parse(localStorage.getItem(SNOOZED_KEY)||"[]")); } catch { return new Set(); } }
+function saveSnoozed(s) { try { localStorage.setItem(SNOOZED_KEY,JSON.stringify([...s])); } catch {} }
+
+function App() {
+  const [items, setItems]             = useState([]);
+  const [reminders, setReminders]     = useState([]);
+  const [tab, setTab]                 = useState("week");
+  const [weekBase, setWeekBase]       = useState(new Date());
+  const [selDate, setSelDate]         = useState(new Date());
+  const [modal, setModal]             = useState(null);
+  const [detailItem, setDetailItem]   = useState(null);
+  const [deferItem, setDeferItem]     = useState(null);
+  const [extendItem, setExtendItem]   = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [filterType, setFilterType]   = useState("all");
+  const [filterCat, setFilterCat]     = useState("all");
+  const [weekGroup, setWeekGroup]     = useState("type");
+  const [allGroup, setAllGroup]       = useState("type");
+  const [alarmingItems, setAlarmingItems] = useState([]);
+  const [overdueAlarms, setOverdueAlarms] = useState([]);
+  const [snoozedIds, setSnoozedIds]   = useState(new Set());
+  const [dismissedIds, setDismissedIds] = useState(new Set());
+  const [notifPerm, setNotifPerm]     = useState("default");
+  const [minsNow, setMinsNow]         = useState(new Date().getHours()*60+new Date().getMinutes());
+  const lastFiredRef = useRef(new Set());
+  const quickRef = useRef(null);
+  const [quickText, setQuickText]     = useState("");
+  const [quickPriority, setQuickPriority] = useState("high");
+
+  // ── GOOGLE CALENDAR OAUTH & SYNC STATE ──
+  const [gcalToken, setGcalToken]   = useState(null);
+  const [gcalUser, setGcalUser]     = useState(null);
+  const [syncStatus, setSyncStatus] = useState("");
+  const [syncing, setSyncing]       = useState(false);
+  const [syncLog, setSyncLog]       = useState([]);
+  const gcalClientRef = useRef(null);
+
+  const blank  = { type:"task", category:"work", title:"", priority:"high", dueDate:todayKey(), dueTime:"", startTime:"", endTime:"", location:"", notes:"", estimatedMins:60, recurrence:"none", actionItems:[] };
+  const blankR = { title:"", date:todayKey(), time:"09:00", notes:"" };
+  const [form, setForm]   = useState(blank);
+  const [rform, setRform] = useState(blankR);
+
+  useEffect(() => {
+    const d=loadData(); setItems(d.items); setReminders(d.reminders);
+    setSnoozedIds(loadSnoozed());
+    if("Notification" in window) setNotifPerm(Notification.permission);
+    // Restore saved token
+    const savedTok = localStorage.getItem(GCAL_TOKEN_KEY);
+    if(savedTok) { try { const t=JSON.parse(savedTok); if(t.expires>Date.now()) { setGcalToken(t.access_token); setGcalUser(t.email||USER_EMAIL); } } catch {} }
+  }, []);
+
+  // Init Google OAuth client once GSI script loads
+  useEffect(() => {
+    if(!IS_CONFIGURED) return;
+    const init = () => {
+      if(!window.google?.accounts?.oauth2) return;
+      gcalClientRef.current = window.google.accounts.oauth2.initTokenClient({
+        client_id: GCAL_CLIENT_ID,
+        scope: GCAL_SCOPE,
+        callback: (resp) => {
+          if(resp.access_token) {
+            setGcalToken(resp.access_token);
+            setGcalUser(USER_EMAIL);
+            const expiry = Date.now() + (resp.expires_in||3600)*1000;
+            localStorage.setItem(GCAL_TOKEN_KEY, JSON.stringify({ access_token:resp.access_token, expires:expiry, email:USER_EMAIL }));
+            setSyncStatus("✅ Connected to Google Calendar!");
+          } else { setSyncStatus("❌ Sign-in failed. Try again."); }
+        }
+      });
+    };
+    if(window.google) init(); else window.addEventListener('load', init);
+  }, []);
+
+  const signInGcal = () => {
+    if(!IS_CONFIGURED) { setSyncStatus("⚠️ Please add your Google Client ID first. See setup instructions in the Sync tab."); return; }
+    if(!gcalClientRef.current) { setSyncStatus("Google not loaded yet. Try again in a moment."); return; }
+    gcalClientRef.current.requestAccessToken();
+  };
+
+  const signOutGcal = () => {
+    setGcalToken(null); setGcalUser(null);
+    localStorage.removeItem(GCAL_TOKEN_KEY);
+    setSyncStatus("Disconnected from Google Calendar.");
+  };
+
+  const addSyncLog = (msg, ok=true) => setSyncLog(p=>[{msg,ok,ts:new Date().toLocaleTimeString()},...p].slice(0,30));
+
+  // PULL from Google Calendar → merge into app
+  const pullFromGcal = async () => {
+    if(!gcalToken) { setSyncStatus("Please sign in first."); return; }
+    setSyncing(true); setSyncStatus("⏳ Pulling from Google Calendar...");
+    try {
+      const events = await gcalListEvents(gcalToken);
+      const current = [...items]; const seenIds = new Set(current.map(i=>i.gcalId).filter(Boolean));
+      let added=0;
+      for(const ev of events) {
+        if(ev.summary?.includes("TaskMaster")) continue; // skip our own summary events
+        if(!seenIds.has(ev.id)) {
+          const item = gcalEventToItem(ev);
+          // If we created this item (has taskmaster_id), update not duplicate
+          const existingIdx = current.findIndex(i=>i.id===item.id);
+          if(existingIdx>=0) { current[existingIdx]={...current[existingIdx], gcalId:ev.id, synced:true}; }
+          else { current.push(item); added++; }
+          seenIds.add(ev.id);
+        }
+      }
+      const clean = persist(current, null); setItems(clean);
+      const msg = `✅ Pulled ${added} new event${added!==1?"s":""} from Google Calendar`;
+      setSyncStatus(msg); addSyncLog(msg);
+    } catch(e) { const msg="❌ Pull failed: "+e.message; setSyncStatus(msg); addSyncLog(msg,false); }
+    setSyncing(false);
+  };
+
+  // PUSH single item to Google Calendar
+  const pushToGcal = async (item) => {
+    if(!gcalToken) return;
+    try {
+      const ev = await gcalCreateEvent(gcalToken, item);
+      if(ev?.id) {
+        const u = items.map(i=>i.id===item.id?{...i,gcalId:ev.id,synced:true}:i);
+        setItems(u); persist(u, null);
+        addSyncLog("✅ Pushed: "+item.title);
+      }
+    } catch(e) { addSyncLog("❌ Push failed: "+item.title+" — "+e.message, false); }
+  };
+
+  // DELETE from Google Calendar
+  const deleteFromGcal = async (gcalId) => {
+    if(!gcalToken||!gcalId) return;
+    try { await gcalDeleteEvent(gcalToken, gcalId); addSyncLog("🗑 Deleted from GCal"); }
+    catch(e) { addSyncLog("⚠️ GCal delete failed: "+e.message, false); }
+  };
+
+  const persist = useCallback((it,rm) => {
+    const seenIds=new Set();
+    const clean=(it??items).filter(i=>{ if(seenIds.has(i.id)) return false; seenIds.add(i.id); return true; });
+    saveData({ items:clean, reminders:rm??reminders }); return clean;
+  }, [items, reminders]);
+
+  useEffect(() => { if(items.length>0) setSuggestions(generateSuggestions(items,items)); }, [items]);
+
+  useEffect(() => {
+    const tick = () => {
+      const now=new Date(); setMinsNow(now.getHours()*60+now.getMinutes());
+      const alarming=getAlarmingItems(items,snoozedIds).filter(i=>!dismissedIds.has(i.id));
+      const overdue=getOverdueItems(items).filter(i=>!dismissedIds.has(i.id));
+      setAlarmingItems(alarming); setOverdueAlarms(overdue);
+      for(const item of alarming){
+        if(!lastFiredRef.current.has(item.id)){
+          lastFiredRef.current.add(item.id);
+          const t=item.type==="appointment"?item.startTime:item.dueTime;
+          const m=toMins(t)-(now.getHours()*60+now.getMinutes());
+          sendBrowserNotification(`⏰ ${item.type==="appointment"?"Meeting":"Task"} in ${m} min`,item.title);
+        }
+      }
+    };
+    tick();
+    const iv=setInterval(tick, 15*60*1000);
+    return () => clearInterval(iv);
+  }, [items, snoozedIds, dismissedIds]);
+
+  const snoozeItem = (id,mins=10) => {
+    const n=new Set([...snoozedIds,id]); setSnoozedIds(n); saveSnoozed(n);
+    setTimeout(()=>{ setSnoozedIds(p=>{ const x=new Set(p); x.delete(id); saveSnoozed(x); return x; }); },mins*60*1000);
+  };
+  const dismissAlarm = id => setDismissedIds(p=>new Set([...p,id]));
+  const requestNotif = async () => {
+    if(!("Notification" in window)) return;
+    const p=await Notification.requestPermission(); setNotifPerm(p);
+  };
+
+  const handleQuickAdd = (e) => {
+    if((e.key==="Enter"||e.type==="click") && quickText.trim()) {
+      const item = { ...blank, id:`user_${Date.now()}`, title:quickText.trim(), priority:quickPriority, dueDate:todayKey(), done:false, createdAt:new Date().toISOString() };
+      const updated=[...items,item]; const clean=persist(updated,null); setItems(clean);
+      setQuickText("");
+    }
+  };
+
+  const addActionItem = (meetingId, text) => {
+    if(!text.trim()) return;
+    const actionItem = { id:`ai_${Date.now()}`, text:text.trim(), done:false, createdAt:new Date().toISOString() };
+    const u=items.map(i=>i.id===meetingId?{...i,actionItems:[...(i.actionItems||[]),actionItem]}:i);
+    setItems(u); persist(u,null);
+  };
+  const toggleActionItem = (meetingId, actionId) => {
+    const u=items.map(i=>i.id===meetingId?{...i,actionItems:(i.actionItems||[]).map(a=>a.id===actionId?{...a,done:!a.done}:a)}:i);
+    setItems(u); persist(u,null);
+    if(detailItem?.id===meetingId) setDetailItem(u.find(i=>i.id===meetingId));
+  };
+  const deleteActionItem = (meetingId, actionId) => {
+    const u=items.map(i=>i.id===meetingId?{...i,actionItems:(i.actionItems||[]).filter(a=>a.id!==actionId)}:i);
+    setItems(u); persist(u,null);
+    if(detailItem?.id===meetingId) setDetailItem(u.find(i=>i.id===meetingId));
+  };
+  const promoteActionItem = (meeting, action) => {
+    const newTask = { ...blank, id:`user_${Date.now()}`, title:action.text, priority:"high", dueDate:meeting.dueDate, notes:`From: ${meeting.title} on ${meeting.dueDate}`, done:false, createdAt:new Date().toISOString() };
+    const u=[...items.map(i=>i.id===meeting.id?{...i,actionItems:(i.actionItems||[]).filter(a=>a.id!==action.id)}:i),newTask];
+    const clean=persist(u,null); setItems(clean);
+    if(detailItem?.id===meeting.id) setDetailItem(clean.find(i=>i.id===meeting.id));
+  };
+
+  const addItem = () => {
+    if(!form.title.trim()) return;
+    const item={...form,id:`user_${Date.now()}`,done:false,createdAt:new Date().toISOString()};
+    const updated=[...items,item]; const clean=persist(updated,null); setItems(clean);
+    setModal(null); setForm(blank);
+    // Auto-push to GCal if connected
+    if(gcalToken) setTimeout(()=>pushToGcal(item), 100);
+  };
+  const addReminder = () => {
+    if(!rform.title.trim()) return;
+    const r=[...reminders,{...rform,id:`rem_${Date.now()}`,createdAt:new Date().toISOString()}];
+    setReminders(r); persist(null,r); setModal(null); setRform(blankR);
+  };
+  const toggleDone = id => { const u=items.map(i=>i.id===id?{...i,done:!i.done}:i); setItems(u); persist(u,null); };
+  const deleteItem = id => {
+    const item = items.find(i=>i.id===id);
+    const u=items.filter(i=>i.id!==id); setItems(u); persist(u,null); if(detailItem?.id===id) setDetailItem(null);
+    if(gcalToken && item?.gcalId) deleteFromGcal(item.gcalId);
+  };
+  const deleteReminder = id => { const r=reminders.filter(r=>r.id!==id); setReminders(r); persist(null,r); };
+  const updateItemField = (id, fields) => {
+    const u=items.map(i=>i.id===id?{...i,...fields}:i);
+    setItems(u); persist(u,null);
+    if(detailItem?.id===id) setDetailItem(u.find(i=>i.id===id));
+  };
+  const deferToNextWeek = item => { const nd=toKey(addDays(new Date(item.dueDate),7)); updateItemField(item.id,{dueDate:nd,deferred:true}); setDeferItem(null); };
+  const extendTime = (item,mins) => { updateItemField(item.id,{estimatedMins:(item.estimatedMins||60)+mins}); setExtendItem(null); };
+  const acceptSug = sug => { updateItemField(sug.taskId,{dueDate:sug.sugDate,dueTime:sug.sugStart}); setSuggestions(p=>p.filter(s=>s.taskId!==sug.taskId)); };
+
+  // derived
+  const today      = new Date();
+  const weekDates  = getWeekDates(weekBase);
+  const weekKeys   = weekDates.map(toKey);
+  const selKey     = toKey(selDate);
+  const isCurrentWk = sameDay(getWeekDates(weekBase)[0], getWeekDates(today)[0]);
+  const applyFilter = list => list.filter(i=>(filterType==="all"||i.type===filterType)&&(filterCat==="all"||i.category===filterCat));
+  const weekAllItems  = items.filter(i=>weekKeys.includes(i.dueDate));
+  const weekMeetings  = weekAllItems.filter(i=>i.type==="appointment");
+  const weekTasks     = weekAllItems.filter(i=>i.type==="task");
+  const weekPending   = weekTasks.filter(i=>!i.done);
+  const weekDone      = weekTasks.filter(i=>i.done);
+  const allOverdue    = items.filter(i=>!i.done&&i.type==="task"&&i.dueDate<todayKey());
+  const calItems      = applyFilter(items.filter(i=>i.dueDate===selKey).sort((a,b)=>(a.startTime||a.dueTime||"99:99").localeCompare(b.startTime||b.dueTime||"99:99")));
+  const calReminders  = reminders.filter(r=>r.date===selKey);
+  const allFiltered   = applyFilter(items).sort((a,b)=>{ if(a.done!==b.done) return a.done?1:-1; return new Date(a.dueDate)-new Date(b.dueDate); });
+  const todayPending  = items.filter(i=>i.dueDate===todayKey()&&!i.done&&i.type==="task").length;
+  const totalAlerts   = alarmingItems.length+overdueAlarms.length;
+  const minsUntilItem = item => { const t=item.type==="appointment"?item.startTime:item.dueTime; return toMins(t)-minsNow; };
+
+  const C={
+    blue:"#1E40AF",blueM:"#3B82F6",blueL:"#DBEAFE",
+    red:"#DC2626",redL:"#FEF2F2",
+    amber:"#D97706",amberL:"#FFFBEB",
+    green:"#059669",greenL:"#F0FDF4",
+    orange:"#EA580C",orangeL:"#FFF7ED",
+    purple:"#7C3AED",purpleL:"#F5F3FF",
+    teal:"#0D9488",tealL:"#F0FDFA",
+    text:"#1E293B",textM:"#475569",textL:"#94A3B8",
+    bg:"#F1F5F9",card:"#FFFFFF",border:"#E2E8F0",
+  };
+  const S={
+    wrap:{ fontFamily:"'DM Sans','Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto", color:C.text },
+    hdr:{ background:"linear-gradient(140deg,#1E3A8A,#1D4ED8 60%,#0EA5E9)", padding:"18px 15px 0", color:"#fff" },
+    greeting:{ fontSize:11, color:"#93C5FD", letterSpacing:2, textTransform:"uppercase", marginBottom:2 },
+    appName:{ fontSize:23, fontWeight:900, color:"#fff" },
+    subLine:{ fontSize:10, color:"#60A5FA", marginBottom:10 },
+    statsRow:{ display:"flex", gap:6, marginBottom:0, paddingBottom:12 },
+    stat:{ flex:1, background:"rgba(255,255,255,0.15)", borderRadius:11, padding:"8px 6px", textAlign:"center" },
+    statN: c=>({ fontSize:19, fontWeight:900, color:c||"#fff" }),
+    statL:{ fontSize:9, color:"rgba(255,255,255,0.55)", textTransform:"uppercase", letterSpacing:1, marginTop:1 },
+    tabBar:{ display:"flex", background:"rgba(0,0,0,0.15)", borderRadius:"10px 10px 0 0", overflow:"hidden", marginTop:4 },
+    tabBtn: a=>({ flex:1, padding:"10px 2px", background:a?"#fff":"transparent", border:"none", color:a?C.blue:"rgba(255,255,255,0.6)", fontWeight:a?800:500, fontSize:9, cursor:"pointer", letterSpacing:0.3, textTransform:"uppercase", position:"relative" }),
+    alarmDot:{ position:"absolute", top:5, right:5, width:7, height:7, borderRadius:"50%", background:"#EF4444", boxShadow:"0 0 5px #EF4444" },
+    quickBar:{ background:"#fff", borderBottom:`1.5px solid ${C.border}`, padding:"10px 13px", boxShadow:"0 2px 8px rgba(0,0,0,0.06)", position:"sticky", top:0, zIndex:50 },
+    quickLabel:{ fontSize:10, color:C.textL, fontWeight:700, letterSpacing:1, textTransform:"uppercase", marginBottom:7 },
+    quickRow:{ display:"flex", gap:7, alignItems:"center" },
+    quickInput:{ flex:1, background:"#F8FAFC", border:`1.5px solid ${C.border}`, borderRadius:10, padding:"9px 12px", color:C.text, fontSize:16, outline:"none", fontFamily:"inherit" },
+    quickPriRow:{ display:"flex", gap:4 },
+    quickPBtn:(a,p)=>({ width:36, height:36, borderRadius:8, border:`2px solid ${a?PRIORITY[p].color:C.border}`, background:a?PRIORITY[p].bg:"#F8FAFC", color:a?PRIORITY[p].color:C.textL, fontWeight:800, fontSize:10, cursor:"pointer" }),
+    quickAddBtn:{ width:36, height:36, borderRadius:10, background:`linear-gradient(135deg,${C.blue},#0EA5E9)`, border:"none", color:"#fff", fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
+    filterBar:{ background:"#fff", borderBottom:`1.5px solid ${C.border}`, padding:"7px 13px", display:"flex", gap:5, flexWrap:"wrap", position:"sticky", top:0, zIndex:49, boxShadow:"0 2px 6px rgba(0,0,0,0.04)" },
+    filterLabel:{ fontSize:10, color:C.textL, fontWeight:700, letterSpacing:1, alignSelf:"center", marginRight:2, textTransform:"uppercase" },
+    fBtn:(a,c,bg)=>({ padding:"5px 10px", borderRadius:20, cursor:"pointer", fontWeight:700, fontSize:11, border:`1.5px solid ${a?c:C.border}`, background:a?bg:"#F8FAFC", color:a?c:C.textL }),
+    divider:{ width:1, background:C.border, margin:"0 2px", alignSelf:"stretch" },
+    content:{ padding:"12px 13px 96px" },
+    card:{ background:C.card, borderRadius:14, padding:"13px", marginBottom:10, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" },
+    secTitle:{ fontSize:10, fontWeight:800, letterSpacing:2.5, color:C.textL, textTransform:"uppercase", marginBottom:9 },
+    pillRow:{ display:"flex", gap:7, flexWrap:"wrap", marginBottom:12 },
+    pill:(c,bg)=>({ display:"inline-flex", alignItems:"center", gap:4, background:bg, border:`1.5px solid ${c}33`, borderRadius:20, padding:"5px 11px", fontSize:11, color:c, fontWeight:700 }),
+    typeHdr:(c,bg)=>({ background:bg, border:`1.5px solid ${c}30`, borderRadius:10, padding:"8px 11px", marginBottom:7, display:"flex", justifyContent:"space-between", alignItems:"center" }),
+    typeHdrT: c=>({ fontSize:12, fontWeight:800, color:c }),
+    typeHdrC: c=>({ fontSize:11, fontWeight:700, color:c, background:`${c}18`, borderRadius:6, padding:"2px 8px" }),
+    groupRow:{ display:"flex", gap:5, marginBottom:10 },
+    groupBtn:(a,c)=>({ padding:"5px 11px", borderRadius:20, border:`1.5px solid ${a?c:C.border}`, background:a?`${c}18`:"#F8FAFC", color:a?c:C.textL, fontSize:11, fontWeight:700, cursor:"pointer" }),
+    progWrap:{ background:C.border, borderRadius:4, height:5, overflow:"hidden", flex:1 },
+    progFill: pct=>({ height:"100%", width:`${pct}%`, background:`linear-gradient(90deg,${C.blue},#0EA5E9)`, borderRadius:4, transition:"width .4s" }),
+    weekRow:{ display:"flex", gap:4, marginBottom:14 },
+    wDay:(sel,tod)=>({ flex:1, borderRadius:11, padding:"7px 2px", textAlign:"center", cursor:"pointer", background:sel?`linear-gradient(140deg,#1E3A8A,#2563EB)`:tod?C.blueL:"#F8FAFC", border:tod&&!sel?`2px solid #93C5FD`:"2px solid transparent", boxShadow:sel?"0 3px 8px rgba(30,64,175,0.25)":"none" }),
+    wDName: sel=>({ fontSize:9, fontWeight:800, color:sel?"rgba(255,255,255,0.7)":C.textL, textTransform:"uppercase", letterSpacing:0.8 }),
+    wDNum: (sel,tod)=>({ fontSize:15, fontWeight:900, color:sel?"#fff":tod?C.blue:C.text, marginTop:1 }),
+    wDDots:{ display:"flex", justifyContent:"center", gap:2, marginTop:3 },
+    dot: c=>({ width:4, height:4, borderRadius:"50%", background:c }),
+    iCard:(done,priority,type)=>({
+      background:done?"#F8FAFC":type==="appointment"?C.blueL:PRIORITY[priority].bg,
+      border:`1.5px solid ${done?C.border:type==="appointment"?C.blue+"44":PRIORITY[priority].border}`,
+      borderLeft:`4px solid ${done?"#CBD5E1":type==="appointment"?C.blue:PRIORITY[priority].color}`,
+      borderRadius:12, padding:"10px 11px", marginBottom:7, display:"flex", alignItems:"flex-start", gap:9, opacity:done?.5:1,
+    }),
+    chk:(done,p)=>({ width:20, height:20, minWidth:20, borderRadius:6, border:`2px solid ${done?PRIORITY[p].color:C.border}`, background:done?PRIORITY[p].color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", marginTop:1, cursor:"pointer", flexShrink:0 }),
+    iTitle: done=>({ fontSize:14, fontWeight:700, color:done?C.textL:C.text, textDecoration:done?"line-through":"none", marginBottom:3, lineHeight:1.3 }),
+    tagRow:{ display:"flex", gap:4, flexWrap:"wrap", alignItems:"center" },
+    badge:(c,bg,b)=>({ fontSize:9, fontWeight:800, letterSpacing:0.8, color:c, background:bg, border:`1px solid ${b}`, borderRadius:4, padding:"2px 6px" }),
+    catBadge: cat=>({ fontSize:9, color:CATEGORY[cat].color, background:CATEGORY[cat].bg, border:`1px solid ${CATEGORY[cat].border}`, borderRadius:4, padding:"2px 6px", fontWeight:700 }),
+    tTag:{ fontSize:10, color:C.blue, background:C.blueL, borderRadius:4, padding:"2px 7px", fontWeight:600 },
+    dTag:{ fontSize:10, color:"#6366F1", background:"#EEF2FF", borderRadius:4, padding:"2px 6px" },
+    gcalTag:{ fontSize:9, color:"#059669", background:"#ECFDF5", borderRadius:4, padding:"2px 6px", fontWeight:700 },
+    noteSnippet:{ fontSize:11, color:C.textM, marginTop:4, fontStyle:"italic", lineHeight:1.4 },
+    actionCount: n=>({ fontSize:9, color:C.teal, background:C.tealL, border:`1px solid ${C.teal}33`, borderRadius:4, padding:"2px 6px", fontWeight:700 }),
+    chipRow:{ display:"flex", gap:5, marginTop:6, flexWrap:"wrap" },
+    chip:(c,bg)=>({ fontSize:10, color:c, background:bg, borderRadius:6, padding:"3px 9px", cursor:"pointer", fontWeight:700, border:`1px solid ${c}25` }),
+    delBtn:{ background:"none", border:"none", color:C.border, fontSize:14, cursor:"pointer", padding:"0 0 0 4px", flexShrink:0 },
+    remCard:{ background:"#FFFBEB", border:`1.5px solid ${C.amber}33`, borderLeft:`4px solid ${C.amber}`, borderRadius:12, padding:"10px 11px", marginBottom:7, display:"flex", justifyContent:"space-between", alignItems:"flex-start" },
+    sugCard:{ background:C.greenL, border:"1.5px solid #A7F3D0", borderLeft:"4px solid #059669", borderRadius:12, padding:"10px 12px", marginBottom:7 },
+    overlay:{ position:"fixed", inset:0, background:"rgba(15,23,42,0.55)", zIndex:300, display:"flex", alignItems:"flex-end", justifyContent:"center" },
+    sheet:{ background:"#fff", borderTop:`3px solid ${C.blue}`, borderRadius:"18px 18px 0 0", padding:"18px 15px 44px", width:"100%", maxWidth:430, maxHeight:"92vh", overflowY:"auto", boxShadow:"0 -8px 32px rgba(0,0,0,0.12)" },
+    mTitle:{ fontSize:16, fontWeight:900, marginBottom:15, color:C.text },
+    inp:{ width:"100%", background:"#F8FAFC", border:`1.5px solid ${C.border}`, borderRadius:10, padding:"10px 12px", color:C.text, fontSize:16, marginBottom:9, outline:"none", boxSizing:"border-box", fontFamily:"inherit" },
+    textarea:{ width:"100%", background:"#F8FAFC", border:`1.5px solid ${C.border}`, borderRadius:10, padding:"10px 12px", color:C.text, fontSize:14, marginBottom:9, outline:"none", boxSizing:"border-box", fontFamily:"inherit", resize:"vertical", minHeight:80 },
+    row2:{ display:"flex", gap:7, marginBottom:9 },
+    lbl:{ fontSize:10, color:C.textL, letterSpacing:1.5, textTransform:"uppercase", marginBottom:5 },
+    segRow:{ display:"flex", gap:5, marginBottom:11 },
+    seg:(a,c,bg)=>({ flex:1, padding:"8px 3px", borderRadius:9, border:`2px solid ${a?c:C.border}`, background:a?bg:"#F8FAFC", color:a?c:C.textL, fontWeight:800, fontSize:11, cursor:"pointer", textAlign:"center" }),
+    priRow:{ display:"flex", gap:5, marginBottom:11 },
+    priBtn:(sel,p)=>({ flex:1, padding:"8px 0", borderRadius:9, border:`2px solid ${sel?PRIORITY[p].color:C.border}`, background:sel?PRIORITY[p].bg:"#F8FAFC", color:sel?PRIORITY[p].color:C.textL, fontWeight:800, fontSize:11, cursor:"pointer" }),
+    estRow:{ display:"flex", gap:5, marginBottom:11 },
+    estBtn: sel=>({ flex:1, padding:"8px 0", borderRadius:9, border:`1.5px solid ${sel?C.blue:C.border}`, background:sel?C.blueL:"#F8FAFC", color:sel?C.blue:C.textL, fontWeight:700, fontSize:11, cursor:"pointer" }),
+    recRow:{ display:"flex", gap:5, marginBottom:11, flexWrap:"wrap" },
+    recBtn: sel=>({ padding:"7px 10px", borderRadius:9, border:`1.5px solid ${sel?C.purple:C.border}`, background:sel?C.purpleL:"#F8FAFC", color:sel?C.purple:C.textL, fontWeight:700, fontSize:11, cursor:"pointer" }),
+    aBtn: c=>({ width:"100%", padding:"13px", background:`linear-gradient(135deg,${c},${c}CC)`, border:"none", borderRadius:12, color:"#fff", fontSize:14, fontWeight:900, cursor:"pointer", marginTop:7 }),
+    cancelBtn:{ width:"100%", padding:"11px", background:"transparent", border:`1.5px solid ${C.border}`, borderRadius:12, color:C.textL, fontSize:13, fontWeight:700, cursor:"pointer", marginTop:7 },
+    aiCard:(done)=>({ display:"flex", alignItems:"flex-start", gap:8, padding:"8px 0", borderBottom:`1px solid ${C.border}`, opacity:done?.5:1 }),
+    aiChk:(done)=>({ width:18, height:18, minWidth:18, borderRadius:5, border:`2px solid ${done?C.teal:C.border}`, background:done?C.teal:"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", marginTop:1, flexShrink:0 }),
+    aiText: done=>({ fontSize:13, color:done?C.textL:C.text, textDecoration:done?"line-through":"none", flex:1, lineHeight:1.4 }),
+    aiActions:{ display:"flex", gap:6, marginTop:4 },
+    aiBtn:(c,bg)=>({ fontSize:10, color:c, background:bg, borderRadius:6, padding:"3px 8px", cursor:"pointer", fontWeight:700, border:`1px solid ${c}25` }),
+    aiInputRow:{ display:"flex", gap:7, marginTop:10, alignItems:"center" },
+    aiInput:{ flex:1, background:"#F8FAFC", border:`1.5px solid ${C.border}`, borderRadius:9, padding:"8px 11px", color:C.text, fontSize:14, outline:"none", fontFamily:"inherit" },
+    aiAddBtn:{ width:34, height:34, borderRadius:9, background:C.teal, border:"none", color:"#fff", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
+    fab: c=>({ position:"fixed", bottom:82, right:15, width:52, height:52, borderRadius:"50%", background:`linear-gradient(135deg,${c},${c}DD)`, border:"none", color:"#fff", fontSize:22, cursor:"pointer", boxShadow:`0 6px 20px ${c}55`, display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }),
+    nav:{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:430, background:"#fff", borderTop:`1.5px solid ${C.border}`, display:"flex", zIndex:200, boxShadow:"0 -3px 12px rgba(0,0,0,0.07)" },
+    navBtn: a=>({ flex:1, padding:"9px 2px 13px", background:"none", border:"none", color:a?C.blue:C.textL, fontSize:a?20:18, cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, position:"relative" }),
+    navLbl: a=>({ fontSize:8, fontWeight:700, letterSpacing:1, textTransform:"uppercase", color:a?C.blue:C.textL }),
+    navAlert:{ position:"absolute", top:6, right:8, width:8, height:8, borderRadius:"50%", background:"#EF4444", border:"2px solid #fff" },
+    empty:{ textAlign:"center", padding:"24px 8px", color:C.textL },
+    countdownPill: mins=>({ display:"inline-flex", alignItems:"center", gap:4, background:mins<=10?"#FEF2F2":"#FFF7ED", border:`1.5px solid ${mins<=10?C.red:C.orange}`, borderRadius:20, padding:"4px 12px", fontSize:13, fontWeight:900, color:mins<=10?C.red:C.orange }),
+    notifBanner:{ background:"#EFF6FF", border:`1.5px solid #BFDBFE`, borderRadius:12, padding:"10px 13px", marginBottom:12, display:"flex", justifyContent:"space-between", alignItems:"center" },
+  };
+
+  // ── ITEM CARD ──
+  const ItemCard = ({ item, showDate=false }) => {
+    const isApt=item.type==="appointment";
+    const isOverdue=!item.done&&item.dueDate<todayKey()&&!isApt;
+    const timeLabel=isApt&&item.startTime&&item.endTime?`${fmt(item.startTime)} – ${fmt(item.endTime)}`:item.dueTime?fmt(item.dueTime):"";
+    const dur=isApt?durLabel(item.startTime,item.endTime):item.estimatedMins?`~${item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}`:"";
+    const actionsDone=(item.actionItems||[]).filter(a=>a.done).length;
+    const actionsTotal=(item.actionItems||[]).length;
+    const hasNotes=item.notes&&item.notes.trim().length>0;
+    return (
+      <div style={S.iCard(item.done,item.priority,item.type)}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+            {!isApt
+              ? <div style={S.chk(item.done,item.priority)} onClick={()=>toggleDone(item.id)}>{item.done&&<span style={{fontSize:9,color:"#fff",fontWeight:900}}>✓</span>}</div>
+              : <span style={{fontSize:17,flexShrink:0,marginTop:1}}>📅</span>
+            }
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{...S.iTitle(item.done),cursor:"pointer"}} onClick={()=>setDetailItem(item)}>{item.title}</div>
+              <div style={S.tagRow}>
+                {!isApt&&<span style={S.badge(PRIORITY[item.priority].color,PRIORITY[item.priority].bg,PRIORITY[item.priority].border)}>{PRIORITY[item.priority].label}</span>}
+                <span style={S.catBadge(item.category)}>{CATEGORY[item.category].icon}</span>
+                {showDate&&<span style={{...S.tTag,color:C.textM,background:"#F1F5F9"}}>{item.dueDate}</span>}
+                {timeLabel&&<span style={S.tTag}>{timeLabel}</span>}
+                {dur&&<span style={S.dTag}>{dur}</span>}
+                {item.recurrence&&item.recurrence!=="none"&&<span style={S.badge(C.purple,C.purpleL,"#DDD6FE")}>🔄</span>}
+                {item.fromGcal&&<span style={S.gcalTag}>GCal</span>}
+                {isOverdue&&<span style={S.badge(C.red,"#FEF2F2","#FECACA")}>OVERDUE</span>}
+                {item.deferred&&<span style={S.badge(C.purple,C.purpleL,"#DDD6FE")}>↷</span>}
+                {actionsTotal>0&&<span style={S.actionCount(actionsTotal)}>✅ {actionsDone}/{actionsTotal}</span>}
+              </div>
+              {hasNotes&&<div style={S.noteSnippet}>📝 {item.notes.length>60?item.notes.slice(0,60)+"…":item.notes}</div>}
+              <div style={S.chipRow}>
+                <span style={S.chip(C.blue,"#EFF6FF")} onClick={()=>setDetailItem(item)}>✏️ Edit / Details</span>
+                {!isApt&&!item.done&&<span style={S.chip(C.purple,C.purpleL)} onClick={()=>setDeferItem(item)}>↷</span>}
+                {!isApt&&!item.done&&<span style={S.chip(C.blue,C.blueL)} onClick={()=>setExtendItem(item)}>+ Time</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+        <button style={S.delBtn} onClick={()=>deleteItem(item.id)}>✕</button>
+      </div>
+    );
+  };
+
+  // ── BREAKDOWN ──
+  const BreakdownSection = ({ groupMode, itemList }) => {
+    if(!itemList.length) return <div style={S.empty}><div style={{fontSize:32,marginBottom:4}}>🎉</div>Nothing here</div>;
+    if(groupMode==="type"){
+      const mtgs=itemList.filter(i=>i.type==="appointment"); const pend=itemList.filter(i=>i.type==="task"&&!i.done); const done=itemList.filter(i=>i.type==="task"&&i.done);
+      return (<>{mtgs.length>0&&<><div style={S.typeHdr(C.blue,C.blueL)}><span style={S.typeHdrT(C.blue)}>📅 Meetings</span><span style={S.typeHdrC(C.blue)}>{mtgs.length}</span></div>{mtgs.map(i=><ItemCard key={i.id} item={i} showDate/>)}</>}{pend.length>0&&<><div style={S.typeHdr(C.red,C.redL)}><span style={S.typeHdrT(C.red)}>📋 Pending</span><span style={S.typeHdrC(C.red)}>{pend.length}</span></div>{pend.map(i=><ItemCard key={i.id} item={i} showDate/>)}</>}{done.length>0&&<><div style={S.typeHdr("#94A3B8","#F8FAFC")}><span style={S.typeHdrT("#94A3B8")}>✅ Done</span><span style={S.typeHdrC("#94A3B8")}>{done.length}</span></div>{done.map(i=><ItemCard key={i.id} item={i} showDate/>)}</>}</>);
+    }
+    if(groupMode==="priority"){
+      const mtgs=itemList.filter(i=>i.type==="appointment");
+      return (<>{["high","medium","low"].map(p=>{ const grp=itemList.filter(i=>i.type==="task"&&i.priority===p); if(!grp.length) return null; return <div key={p}><div style={S.typeHdr(PRIORITY[p].color,PRIORITY[p].bg)}><span style={S.typeHdrT(PRIORITY[p].color)}>{PRIORITY[p].label}</span><span style={S.typeHdrC(PRIORITY[p].color)}>{grp.length}</span></div>{grp.map(i=><ItemCard key={i.id} item={i} showDate/>)}</div>; })}{mtgs.length>0&&<><div style={S.typeHdr(C.blue,C.blueL)}><span style={S.typeHdrT(C.blue)}>📅 Meetings</span><span style={S.typeHdrC(C.blue)}>{mtgs.length}</span></div>{mtgs.map(i=><ItemCard key={i.id} item={i} showDate/>)}</>}</>);
+    }
+    return (<>{["work","personal"].map(cat=>{ const grp=itemList.filter(i=>i.category===cat); if(!grp.length) return null; return <div key={cat}><div style={S.typeHdr(CATEGORY[cat].color,CATEGORY[cat].bg)}><span style={S.typeHdrT(CATEGORY[cat].color)}>{CATEGORY[cat].icon} {CATEGORY[cat].label}</span><span style={S.typeHdrC(CATEGORY[cat].color)}>{grp.length}</span></div>{grp.map(i=><ItemCard key={i.id} item={i} showDate/>)}</div>; })}</>);
+  };
+
+  // ── DETAIL / EDIT MODAL ──
+  const DetailModal = () => {
+    if(!detailItem) return null;
+    const item = items.find(i=>i.id===detailItem.id)||detailItem;
+    const isApt = item.type==="appointment";
+    const [editMode, setEditMode]           = useState(false);
+    const [editTitle, setEditTitle]         = useState(item.title);
+    const [editDate, setEditDate]           = useState(item.dueDate);
+    const [editDueTime, setEditDueTime]     = useState(item.dueTime||"");
+    const [editStartTime, setEditStartTime] = useState(item.startTime||"");
+    const [editEndTime, setEditEndTime]     = useState(item.endTime||"");
+    const [editPriority, setEditPriority]   = useState(item.priority);
+    const [editCategory, setEditCategory]   = useState(item.category);
+    const [editLocation, setEditLocation]   = useState(item.location||"");
+    const [editRecurrence, setEditRecurrence] = useState(item.recurrence||"none");
+    const [editEstMins, setEditEstMins]     = useState(item.estimatedMins||60);
+    const [localNotes, setLocalNotes]       = useState(item.notes||"");
+    const [localActionText, setLocalActionText] = useState("");
+
+    const saveEdits = () => {
+      updateItemField(item.id, { title:editTitle.trim()||item.title, dueDate:editDate, dueTime:editDueTime, startTime:editStartTime, endTime:editEndTime, priority:editPriority, category:editCategory, location:editLocation, recurrence:editRecurrence, estimatedMins:editEstMins, notes:localNotes });
+      setEditMode(false);
+    };
+
+    const ef = { width:"100%", background:"#F8FAFC", border:`1.5px solid ${C.blue}55`, borderRadius:9, padding:"9px 11px", color:C.text, fontSize:16, outline:"none", boxSizing:"border-box", fontFamily:"inherit", marginBottom:8 };
+
+    return (
+      <div style={S.overlay} onClick={()=>{ if(!editMode) setDetailItem(null); }}>
+        <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+          {!editMode ? (<>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+              <div style={{flex:1,paddingRight:8}}>
+                <div style={{fontSize:11,color:isApt?C.blue:PRIORITY[item.priority].color,fontWeight:700,marginBottom:3,textTransform:"uppercase",letterSpacing:1}}>{isApt?"📅 Meeting":"📋 "+PRIORITY[item.priority].label+" Priority"}</div>
+                <div style={{fontSize:18,fontWeight:900,color:C.text,lineHeight:1.2}}>{item.title}</div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                {!isApt&&<div style={{...S.chk(item.done,item.priority),width:28,height:28,borderRadius:8}} onClick={()=>toggleDone(item.id)}>{item.done&&<span style={{fontSize:12,color:"#fff",fontWeight:900}}>✓</span>}</div>}
+                <button onClick={()=>setEditMode(true)} style={{background:C.blueL,border:`1.5px solid ${C.blue}44`,borderRadius:9,padding:"6px 13px",color:C.blue,fontWeight:800,fontSize:12,cursor:"pointer"}}>✏️ Edit</button>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
+              <span style={S.tTag}>📅 {item.dueDate}</span>
+              {isApt&&item.startTime&&<span style={S.tTag}>{fmt(item.startTime)} – {fmt(item.endTime)}</span>}
+              {isApt&&item.startTime&&<span style={S.dTag}>{durLabel(item.startTime,item.endTime)}</span>}
+              {!isApt&&item.dueTime&&<span style={S.tTag}>⏰ {fmt(item.dueTime)}</span>}
+              {!isApt&&item.estimatedMins&&<span style={S.dTag}>~{item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}</span>}
+              <span style={S.catBadge(item.category)}>{CATEGORY[item.category].icon} {CATEGORY[item.category].label}</span>
+              {item.recurrence&&item.recurrence!=="none"&&<span style={S.badge(C.purple,C.purpleL,"#DDD6FE")}>🔄 {item.recurrence}</span>}
+              {item.location&&<span style={{...S.tTag,color:"#059669",background:"#ECFDF5"}}>📍 {item.location}</span>}
+            </div>
+            <div style={S.lbl}>📝 Notes</div>
+            <textarea style={S.textarea} placeholder="Add notes…" value={localNotes} onChange={e=>setLocalNotes(e.target.value)} onBlur={()=>updateItemField(item.id,{notes:localNotes})}/>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div style={S.lbl}>✅ Action Items</div>
+              {(item.actionItems||[]).length>0&&<span style={{fontSize:10,color:C.textL}}>{(item.actionItems||[]).filter(a=>a.done).length}/{(item.actionItems||[]).length} done</span>}
+            </div>
+            {(item.actionItems||[]).length===0&&<div style={{fontSize:12,color:C.textL,marginBottom:8,fontStyle:"italic"}}>{isApt?"No action items yet — add follow-ups from this meeting":"No action items yet"}</div>}
+            {(item.actionItems||[]).map(action=>(
+              <div key={action.id} style={S.aiCard(action.done)}>
+                <div style={S.aiChk(action.done)} onClick={()=>toggleActionItem(item.id,action.id)}>{action.done&&<span style={{fontSize:9,color:"#fff",fontWeight:900}}>✓</span>}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={S.aiText(action.done)}>{action.text}</div>
+                  {!action.done&&<div style={S.aiActions}><span style={S.aiBtn(C.blue,C.blueL)} onClick={()=>promoteActionItem(item,action)}>→ Make task</span><span style={S.aiBtn(C.red,"#FEF2F2")} onClick={()=>deleteActionItem(item.id,action.id)}>Delete</span></div>}
+                </div>
+              </div>
+            ))}
+            <div style={S.aiInputRow}>
+              <input style={S.aiInput} placeholder={isApt?"Add follow-up action…":"Add action item…"} value={localActionText}
+                onChange={e=>setLocalActionText(e.target.value)}
+                onKeyDown={e=>{ if(e.key==="Enter"){ addActionItem(item.id,localActionText); setLocalActionText(""); }}}
+              />
+              <button style={S.aiAddBtn} onClick={()=>{ addActionItem(item.id,localActionText); setLocalActionText(""); }}>+</button>
+            </div>
+            {!isApt&&!item.done&&<div style={{display:"flex",gap:7,marginTop:14}}><button style={{...S.aBtn(C.purple),flex:1,marginTop:0}} onClick={()=>{setDetailItem(null);setDeferItem(item);}}>↷ Next Week</button><button style={{...S.aBtn(C.blue),flex:1,marginTop:0}} onClick={()=>{setDetailItem(null);setExtendItem(item);}}>+ Time</button></div>}
+            <button style={S.cancelBtn} onClick={()=>setDetailItem(null)}>Close</button>
+          </>) : (<>
+            <div style={{fontSize:16,fontWeight:900,color:C.text,marginBottom:14}}>✏️ Edit {isApt?"Meeting":"Task"}</div>
+            <div style={S.lbl}>Title</div>
+            <input style={ef} value={editTitle} onChange={e=>setEditTitle(e.target.value)}/>
+            <div style={S.lbl}>Category</div>
+            <div style={{display:"flex",gap:6,marginBottom:10}}>
+              <button style={S.seg(editCategory==="work",C.blue,C.blueL)} onClick={()=>setEditCategory("work")}>💼 Work</button>
+              <button style={S.seg(editCategory==="personal",C.purple,C.purpleL)} onClick={()=>setEditCategory("personal")}>🏠 Personal</button>
+            </div>
+            {!isApt&&<><div style={S.lbl}>Priority</div><div style={{display:"flex",gap:6,marginBottom:10}}>{["high","medium","low"].map(p=><button key={p} style={S.priBtn(editPriority===p,p)} onClick={()=>setEditPriority(p)}>{PRIORITY[p].label}</button>)}</div></>}
+            <div style={S.lbl}>Date</div>
+            <input type="date" style={ef} value={editDate} onChange={e=>setEditDate(e.target.value)}/>
+            {!isApt&&<><div style={S.lbl}>Due Time <span style={{color:C.textL,fontWeight:400}}>(optional)</span></div><input type="time" style={ef} value={editDueTime} onChange={e=>setEditDueTime(e.target.value)}/></>}
+            {isApt&&<>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                <div style={{flex:1}}><div style={S.lbl}>Start</div><input type="time" style={{...ef,marginBottom:0}} value={editStartTime} onChange={e=>setEditStartTime(e.target.value)}/></div>
+                <div style={{flex:1}}><div style={S.lbl}>End</div><input type="time" style={{...ef,marginBottom:0}} value={editEndTime} onChange={e=>setEditEndTime(e.target.value)}/></div>
+              </div>
+              {editStartTime&&editEndTime&&toMins(editEndTime)>toMins(editStartTime)&&<div style={{fontSize:11,color:C.blue,marginBottom:8}}>⏱ {durLabel(editStartTime,editEndTime)}</div>}
+              <div style={S.lbl}>Location</div>
+              <input style={ef} placeholder="Location…" value={editLocation} onChange={e=>setEditLocation(e.target.value)}/>
+            </>}
+            {!isApt&&<><div style={S.lbl}>Estimated Time</div><div style={{display:"flex",gap:6,marginBottom:10}}>{[30,60,90,120].map(m=><button key={m} style={{flex:1,padding:"8px 0",borderRadius:9,border:`1.5px solid ${editEstMins===m?C.blue:C.border}`,background:editEstMins===m?C.blueL:"#F8FAFC",color:editEstMins===m?C.blue:C.textL,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>setEditEstMins(m)}>{m<60?m+"m":m/60+"h"}</button>)}</div></>}
+            <div style={S.lbl}>Repeat</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>{RECURRENCE_OPTS.map(r=><button key={r.value} style={S.recBtn(editRecurrence===r.value)} onClick={()=>setEditRecurrence(r.value)}>{r.label}</button>)}</div>
+            <div style={S.lbl}>Notes</div>
+            <textarea style={{...S.textarea,border:`1.5px solid ${C.blue}55`}} value={localNotes} onChange={e=>setLocalNotes(e.target.value)}/>
+            <button style={S.aBtn(C.green)} onClick={saveEdits}>✅ Save Changes</button>
+            <button style={S.cancelBtn} onClick={()=>setEditMode(false)}>Cancel</button>
+          </>)}
+        </div>
+      </div>
+    );
+  };
+
+  // ── ALARM TAB ──
+  const renderAlarms = () => (
+    <>
+      {notifPerm!=="granted"&&<div style={S.notifBanner}><div><div style={{fontSize:12,fontWeight:700,color:C.blue}}>🔔 Enable phone notifications</div><div style={{fontSize:10,color:C.textL,marginTop:2}}>Get alarms when app is minimised</div></div><button style={{background:C.blue,border:"none",borderRadius:9,padding:"7px 14px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={requestNotif}>Enable</button></div>}
+      <div style={{...S.card,background:"linear-gradient(135deg,#EFF6FF,#F0FDF4)",border:`1.5px solid ${C.blueL}`,marginBottom:12}}>
+        <div style={{fontSize:11,fontWeight:800,color:C.blue,marginBottom:7}}>⏰ Alarm Settings</div>
+        <div style={{fontSize:11,color:C.textM,lineHeight:1.9}}>Triggers: 🔴 HIGH priority tasks · 📅 All meetings<br/>Fires: 30 min before due time · In-app check: every 15 min<br/>{notifPerm==="granted"?"✅ Browser notifications active":"⚠️ Browser notifications — tap Enable above"}</div>
+      </div>
+      {alarmingItems.filter(i=>!dismissedIds.has(i.id)).map(item=>{
+        const t=item.type==="appointment"?item.startTime:item.dueTime; const mins=minsUntilItem(item);
+        return (<div key={item.id} style={{background:"linear-gradient(135deg,#FFF7ED,#FEF2F2)",border:`2px solid ${C.orange}`,borderLeft:`6px solid ${C.orange}`,borderRadius:16,padding:"14px 13px 11px",marginBottom:10,boxShadow:"0 6px 20px rgba(234,88,12,0.2)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}><div><div style={{fontSize:11,color:C.textL,marginBottom:2}}>{item.type==="appointment"?"📅 MEETING":"📋 HIGH PRIORITY"}</div><div style={{fontSize:16,fontWeight:900,color:C.text}}>{item.title}</div></div><div style={S.countdownPill(mins)}>⏱ {mins}m</div></div>
+          <div style={{fontSize:13,color:C.orange,fontWeight:700,marginBottom:10}}>{item.type==="appointment"?`${fmt(item.startTime)} – ${fmt(item.endTime)}`:`Due ${fmt(t)}`} · {item.dueDate}</div>
+          <div style={{display:"flex",gap:7}}><button style={{flex:1,padding:"9px 0",borderRadius:10,background:"#FFF7ED",border:`1.5px solid ${C.orange}`,color:C.orange,fontWeight:800,fontSize:12,cursor:"pointer"}} onClick={()=>snoozeItem(item.id,10)}>⏸ Snooze 10m</button><button style={{flex:1,padding:"9px 0",borderRadius:10,background:"#059669",border:"none",color:"#fff",fontWeight:800,fontSize:12,cursor:"pointer"}} onClick={()=>dismissAlarm(item.id)}>✓ Dismiss</button></div>
+        </div>);
+      })}
+      {overdueAlarms.filter(i=>!dismissedIds.has(i.id)).map(item=>{
+        const t=item.type==="appointment"?item.startTime:item.dueTime;
+        return (<div key={item.id} style={{background:"#FFF0F0",border:`2px solid #FECACA`,borderLeft:`6px solid ${C.red}`,borderRadius:14,padding:"12px 13px 10px",marginBottom:9}}>
+          <div style={{fontSize:11,color:"#EF4444",fontWeight:700,marginBottom:2}}>🔴 OVERDUE</div>
+          <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:3}}>{item.title}</div>
+          <div style={{fontSize:12,color:"#EF4444",marginBottom:8}}>Was due: {item.dueDate}{t?` at ${fmt(t)}`:""}</div>
+          <div style={{display:"flex",gap:7}}>{item.type!=="appointment"&&<button style={{flex:1,padding:"9px 0",borderRadius:10,background:C.purpleL,border:`1.5px solid ${C.purple}`,color:C.purple,fontWeight:800,fontSize:12,cursor:"pointer"}} onClick={()=>setDeferItem(item)}>↷ Next Week</button>}<button style={{flex:1,padding:"9px 0",borderRadius:10,background:C.greenL,border:"1.5px solid #059669",color:"#059669",fontWeight:800,fontSize:12,cursor:"pointer"}} onClick={()=>toggleDone(item.id)}>✓ Mark Done</button><button style={{padding:"9px 12px",borderRadius:10,background:"#F8FAFC",border:`1.5px solid ${C.border}`,color:C.textL,fontWeight:800,fontSize:12,cursor:"pointer"}} onClick={()=>dismissAlarm(item.id)}>✕</button></div>
+        </div>);
+      })}
+      {(()=>{
+        const upcomingToday=items.filter(i=>{ if(i.done||i.dueDate!==todayKey()) return false; const t=i.type==="appointment"?i.startTime:i.dueTime; if(!t) return false; return toMins(t)-minsNow>ALARM_MINUTES; }).sort((a,b)=>{ const ta=a.type==="appointment"?a.startTime:a.dueTime; const tb=b.type==="appointment"?b.startTime:b.dueTime; return toMins(ta)-toMins(tb); });
+        if(!upcomingToday.length) return null;
+        return <div><div style={S.secTitle}>📅 Coming Up Today</div>{upcomingToday.map(item=>{ const t=item.type==="appointment"?item.startTime:item.dueTime; const mins=toMins(t)-minsNow; const q=(item.type==="task"&&item.priority==="high")||item.type==="appointment"; return <div key={item.id} style={{...S.iCard(item.done,item.priority,item.type),background:q?"#FFFBEB":"#F8FAFC",border:`1.5px solid ${q?C.amber+"55":C.border}`,borderLeft:`4px solid ${q?C.amber:"#CBD5E1"}`}}><div style={{flex:1}} onClick={()=>setDetailItem(item)}><div style={S.iTitle(false)}>{item.title}</div><div style={S.tagRow}>{item.type==="appointment"&&<span style={S.tTag}>{fmt(t)}{item.endTime?` – ${fmt(item.endTime)}`:""}</span>}{item.type==="task"&&t&&<span style={S.tTag}>{fmt(t)}</span>}<span style={{fontSize:10,color:mins<=60?C.amber:C.textL,fontWeight:700}}>in {mins>=60?`${Math.floor(mins/60)}h ${mins%60}m`:`${mins}m`}</span>{q&&<span style={S.badge(C.amber,"#FEF3C7","#FDE68A")}>⏰</span>}</div></div></div>; })}</div>;
+      })()}
+      {alarmingItems.filter(i=>!dismissedIds.has(i.id)).length===0&&overdueAlarms.filter(i=>!dismissedIds.has(i.id)).length===0&&<div style={{...S.card,textAlign:"center",padding:"32px 16px"}}><div style={{fontSize:48,marginBottom:12}}>✅</div><div style={{fontSize:16,fontWeight:800,color:C.text,marginBottom:6}}>All clear!</div><div style={{fontSize:12,color:C.textL,lineHeight:1.7}}>No alarms firing right now.<br/>Alarms trigger 30 min before HIGH tasks or meetings.</div></div>}
+    </>
+  );
+
+  // ── WEEK TAB ──
+  const renderWeek = () => {
+    const pct=weekTasks.length?(weekDone.length/weekTasks.length)*100:0;
+    return (<>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div><div style={{fontSize:14,fontWeight:900,color:C.text}}>{isCurrentWk?"This Week":"Week of "+MONTHS[weekDates[0].getMonth()]+" "+weekDates[0].getDate()}</div><div style={{fontSize:10,color:C.textL}}>{weekDates[0].getDate()} {MONTHS[weekDates[0].getMonth()]} – {weekDates[6].getDate()} {MONTHS[weekDates[6].getMonth()]}</div></div>
+        <div style={{display:"flex",gap:5}}>
+          <button style={{background:C.blueL,border:"none",color:C.blue,borderRadius:8,padding:"5px 10px",cursor:"pointer",fontWeight:700,fontSize:14}} onClick={()=>setWeekBase(addDays(weekBase,-7))}>‹</button>
+          {!isCurrentWk&&<button style={{background:C.blueL,border:"none",color:C.blue,borderRadius:8,padding:"5px 9px",cursor:"pointer",fontWeight:700,fontSize:10}} onClick={()=>setWeekBase(new Date())}>Now</button>}
+          <button style={{background:C.blueL,border:"none",color:C.blue,borderRadius:8,padding:"5px 10px",cursor:"pointer",fontWeight:700,fontSize:14}} onClick={()=>setWeekBase(addDays(weekBase,7))}>›</button>
+        </div>
+      </div>
+      <div style={S.pillRow}>
+        {(filterType==="all"||filterType==="task")&&<div style={S.pill(C.red,C.redL)}>🔴 {weekPending.length} pending</div>}
+        {(filterType==="all"||filterType==="appointment")&&<div style={S.pill(C.blue,C.blueL)}>📅 {weekMeetings.length} meetings</div>}
+        {allOverdue.length>0&&isCurrentWk&&<div style={S.pill(C.red,"#FEE2E2")}>⚠️ {allOverdue.length} overdue</div>}
+        {(filterType==="all"||filterType==="task")&&<div style={S.pill(C.green,C.greenL)}>✅ {weekDone.length} done</div>}
+      </div>
+      {weekTasks.length>0&&<div style={{...S.card,padding:"10px 13px",marginBottom:10}}><div style={{display:"flex",alignItems:"center",gap:9}}><span style={{fontSize:11,color:C.textM,flexShrink:0}}>{weekDone.length}/{weekTasks.length}</span><div style={S.progWrap}><div style={S.progFill(pct)}/></div><span style={{fontSize:11,color:C.blue,fontWeight:800,flexShrink:0}}>{Math.round(pct)}%</span></div></div>}
+      <div style={S.weekRow}>
+        {weekDates.map((date,i)=>{ const dk=toKey(date); const di=items.filter(x=>x.dueDate===dk); const hasTsk=di.some(x=>x.type==="task"&&!x.done); const hasApt=di.some(x=>x.type==="appointment"); const hasRem=reminders.some(r=>r.date===dk); const isSel=sameDay(date,selDate),isTod=sameDay(date,today); return (<div key={i} style={S.wDay(isSel,isTod)} onClick={()=>setSelDate(date)}><div style={S.wDName(isSel)}>{DAYS_SHORT[date.getDay()]}</div><div style={S.wDNum(isSel,isTod)}>{date.getDate()}</div><div style={S.wDDots}>{hasTsk&&<div style={S.dot(C.red)}/>}{hasApt&&<div style={S.dot(C.blue)}/>}{hasRem&&<div style={S.dot(C.amber)}/>}</div></div>); })}
+      </div>
+      <div style={S.card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div style={S.secTitle}>{DAYS_FULL[selDate.getDay()]}, {MONTHS[selDate.getMonth()]} {selDate.getDate()}</div>
+          <div style={{display:"flex",gap:4}}>{["type","priority","category"].map(g=><button key={g} style={S.groupBtn(weekGroup===g,C.blue)} onClick={()=>setWeekGroup(g)}>{g==="type"?"Type":g==="priority"?"Pri":"Cat"}</button>)}</div>
+        </div>
+        {calItems.length===0&&calReminders.length===0?<div style={S.empty}><div style={{fontSize:28,marginBottom:4}}>📋</div>Nothing to show{filterType!=="all"?" — try changing filter":""}</div>:<BreakdownSection groupMode={weekGroup} itemList={calItems}/>}
+        {calReminders.map(r=><div key={r.id} style={S.remCard}><div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:"#92400E",marginBottom:3}}>🔔 {r.title}</div><span style={{...S.tTag,color:C.amber,background:"#FEF3C7"}}>{fmt(r.time)}</span></div><button style={S.delBtn} onClick={()=>deleteReminder(r.id)}>✕</button></div>)}
+      </div>
+      {allOverdue.length>0&&isCurrentWk&&(filterType==="all"||filterType==="task")&&<div style={S.card}><div style={S.secTitle}>⚠️ Overdue</div>{allOverdue.map(i=><ItemCard key={i.id} item={i} showDate/>)}</div>}
+      {suggestions.length>0&&(filterType==="all"||filterType==="task")&&<div style={S.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><div style={S.secTitle}>✨ Suggestions</div><button style={{background:"none",border:"none",color:C.textL,fontSize:11,cursor:"pointer"}} onClick={()=>setShowSuggest(!showSuggest)}>{showSuggest?"Hide":"Show"}</button></div>{!showSuggest?<div style={{fontSize:12,color:C.textL}}>{suggestions.length} tasks need a time slot</div>:suggestions.map(sug=><div key={sug.taskId} style={S.sugCard}><div style={{fontSize:13,fontWeight:700,color:"#065F46",marginBottom:3}}>"{sug.taskTitle}"</div><div style={{fontSize:11,color:"#059669",marginBottom:8}}>💡 {sug.dayLabel} · {fmt(sug.sugStart)} – {fmt(sug.sugEnd)}</div><div style={{display:"flex",gap:6}}><button style={{flex:1,padding:"7px",borderRadius:9,border:"1.5px solid #059669",background:"#059669",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>acceptSug(sug)}>✓ Accept</button><button style={{flex:1,padding:"7px",borderRadius:9,border:`1.5px solid ${C.border}`,background:"#fff",color:C.textL,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>setSuggestions(p=>p.filter(s=>s.taskId!==sug.taskId))}>Dismiss</button></div></div>)}</div>}
+    </>);
+  };
+
+  // ── ALL TAB ──
+  const renderAll = () => {
+    const allP=items.filter(i=>!i.done&&i.type==="task"); const hi=allP.filter(i=>i.priority==="high").length; const md=allP.filter(i=>i.priority==="medium").length; const lo=allP.filter(i=>i.priority==="low").length; const mt=items.filter(i=>i.type==="appointment"&&!i.done).length;
+    return (<>
+      <div style={S.card}><div style={S.secTitle}>All Outstanding</div>
+        <div style={S.pillRow}>
+          {(filterType==="all"||filterType==="task")&&<><div style={S.pill(C.red,C.redL)}>🔴 {hi} high</div><div style={S.pill(C.amber,C.amberL)}>🟡 {md} med</div><div style={S.pill(C.green,C.greenL)}>🟢 {lo} low</div></>}
+          {(filterType==="all"||filterType==="appointment")&&<div style={S.pill(C.blue,C.blueL)}>📅 {mt} meetings</div>}
+        </div>
+        <div style={S.groupRow}>{["type","priority","category"].map(g=><button key={g} style={S.groupBtn(allGroup===g,C.blue)} onClick={()=>setAllGroup(g)}>{g==="type"?"By Type":g==="priority"?"By Priority":"By Category"}</button>)}</div>
+      </div>
+      <div style={S.card}><BreakdownSection groupMode={allGroup} itemList={allFiltered}/></div>
+    </>);
+  };
+
+  const isApt=form.type==="appointment";
+
+  return (
+    <div style={S.wrap}>
+      <div style={S.hdr}>
+        <div style={S.greeting}>Good {today.getHours()<12?"Morning":today.getHours()<18?"Afternoon":"Evening"}, Ye Win 👋</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div style={S.appName}>TaskMaster Pro</div>
+          <div style={{background:"rgba(255,255,255,0.2)",borderRadius:20,padding:"4px 10px",fontSize:10,color:"#fff",fontWeight:700}}>✅ GCal Live</div>
+        </div>
+        <div style={S.subLine}>{USER_EMAIL} · SGT</div>
+        <div style={S.statsRow}>
+          <div style={S.stat}><div style={S.statN()}>{todayPending}</div><div style={S.statL}>Today</div></div>
+          <div style={S.stat}><div style={S.statN()}>{weekPending.length}</div><div style={S.statL}>This Wk</div></div>
+          <div style={S.stat}><div style={S.statN()}>{weekMeetings.length}</div><div style={S.statL}>Meetings</div></div>
+          <div style={S.stat}><div style={S.statN(totalAlerts>0?"#FCA5A5":undefined)}>{totalAlerts}</div><div style={S.statL}>Alerts</div></div>
+        </div>
+        <div style={S.tabBar}>
+          {[["alarms","⏰ Alarms"],["week","📅 Week"],["all","📋 All"],["reminders","🔔 Alerts"],["sync","🔗 Sync"]].map(([k,l])=>(
+            <button key={k} style={S.tabBtn(tab===k)} onClick={()=>setTab(k)}>{l}{k==="alarms"&&totalAlerts>0&&<span style={S.alarmDot}/>}</button>
+          ))}
+        </div>
+      </div>
+
+      {(tab==="week"||tab==="all")&&(
+        <div style={S.quickBar}>
+          <div style={S.quickLabel}>⚡ Quick Add Task</div>
+          <div style={S.quickRow}>
+            <input ref={quickRef} style={S.quickInput} placeholder="Type task, press Enter…" value={quickText} onChange={e=>setQuickText(e.target.value)} onKeyDown={handleQuickAdd}/>
+            <div style={S.quickPriRow}>
+              {["high","medium","low"].map(p=><button key={p} style={S.quickPBtn(quickPriority===p,p)} onClick={()=>setQuickPriority(p)}>{p==="high"?"H":p==="medium"?"M":"L"}</button>)}
+            </div>
+            <button style={S.quickAddBtn} onClick={handleQuickAdd}>+</button>
+          </div>
+        </div>
+      )}
+
+      {(tab==="week"||tab==="all")&&(
+        <div style={S.filterBar}>
+          <span style={S.filterLabel}>Show:</span>
+          {[["all","All","#475569","#F1F5F9"],["task","Tasks 📋","#DC2626","#FEF2F2"],["appointment","Meetings 📅","#1D4ED8","#EFF6FF"]].map(([v,l,c,bg])=>(
+            <button key={v} style={S.fBtn(filterType===v,c,bg)} onClick={()=>setFilterType(v)}>{l}</button>
+          ))}
+          <div style={S.divider}/>
+          {[["all","All","#475569","#F1F5F9"],["work","💼","#1D4ED8","#EFF6FF"],["personal","🏠","#7C3AED","#F5F3FF"]].map(([v,l,c,bg])=>(
+            <button key={v} style={S.fBtn(filterCat===v,c,bg)} onClick={()=>setFilterCat(v)}>{l}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={S.content}>
+        {tab==="alarms"    && renderAlarms()}
+        {tab==="week"      && renderWeek()}
+        {tab==="all"       && renderAll()}
+        {tab==="sync" && (() => {
+          const C2={blue:"#1E40AF",blueL:"#DBEAFE",green:"#059669",greenL:"#F0FDF4",red:"#DC2626",redL:"#FEF2F2",amber:"#D97706",border:"#E2E8F0",textL:"#94A3B8",textM:"#475569",text:"#1E293B",card:"#FFFFFF",teal:"#0D9488",tealL:"#F0FDFA"};
+          return (<>
+            {/* Connection Card */}
+            <div style={{background:C2.card,borderRadius:14,padding:16,marginBottom:10,boxShadow:"0 1px 3px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:10,fontWeight:800,letterSpacing:2.5,color:C2.textL,textTransform:"uppercase",marginBottom:12}}>Google Calendar Sync</div>
+              {gcalToken ? (<>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+                  <div style={{width:40,height:40,borderRadius:"50%",background:C2.greenL,border:"2px solid #A7F3D0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>✅</div>
+                  <div><div style={{fontSize:14,fontWeight:800,color:C2.text}}>Connected</div><div style={{fontSize:11,color:C2.textL}}>{gcalUser||USER_EMAIL}</div></div>
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                  <button style={{flex:1,padding:"11px 0",background:`linear-gradient(135deg,${C2.blue},#0EA5E9)`,border:"none",borderRadius:11,color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer"}} onClick={pullFromGcal} disabled={syncing}>{syncing?"⏳ Syncing…":"⬇️ Pull from GCal"}</button>
+                </div>
+                <button style={{width:"100%",padding:"10px",background:"transparent",border:`1.5px solid ${C2.border}`,borderRadius:11,color:C2.textL,fontSize:13,fontWeight:700,cursor:"pointer"}} onClick={signOutGcal}>Disconnect</button>
+                {syncStatus&&<div style={{marginTop:10,background:syncStatus.startsWith("✅")?C2.greenL:syncStatus.startsWith("❌")?"#FEF2F2":C2.blueL,border:`1.5px solid ${syncStatus.startsWith("✅")?"#A7F3D0":syncStatus.startsWith("❌")?"#FECACA":"#BFDBFE"}`,borderRadius:10,padding:"9px 12px",fontSize:12,color:syncStatus.startsWith("✅")?C2.green:syncStatus.startsWith("❌")?C2.red:C2.blue}}>{syncStatus}</div>}
+              </>) : (<>
+                <div style={{fontSize:12,color:C2.textM,lineHeight:1.8,marginBottom:14}}>Connect your Google Calendar to sync tasks and meetings across all your devices — phone, computer, tablet.</div>
+                <button style={{width:"100%",padding:"13px",background:"linear-gradient(135deg,#4285F4,#1E40AF)",border:"none",borderRadius:12,color:"#fff",fontSize:14,fontWeight:900,cursor:"pointer"}} onClick={signInGcal}>
+                  🔐 Sign in with Google
+                </button>
+                {!IS_CONFIGURED&&<div style={{marginTop:12,background:"#FFFBEB",border:"1.5px solid #FDE68A",borderRadius:11,padding:"12px 13px",fontSize:12,color:"#92400E",lineHeight:1.8}}>
+                  <strong>⚠️ One-time setup required (5 min):</strong><br/>
+                  1. Go to <strong>console.cloud.google.com</strong><br/>
+                  2. Create a project → Enable <strong>Google Calendar API</strong><br/>
+                  3. APIs &amp; Services → Credentials → <strong>Create OAuth 2.0 Client ID</strong> (Web app)<br/>
+                  4. Add <code>file:///</code> to Authorized JavaScript Origins<br/>
+                  5. Copy the Client ID and open this HTML file in a text editor<br/>
+                  6. Replace <code>YOUR_CLIENT_ID_HERE</code> near the top with your Client ID<br/>
+                  7. Save and reopen the HTML file
+                </div>}
+                {syncStatus&&<div style={{marginTop:10,background:"#FEF2F2",border:"1.5px solid #FECACA",borderRadius:10,padding:"9px 12px",fontSize:12,color:C2.red}}>{syncStatus}</div>}
+              </>)}
+            </div>
+
+            {/* How it works */}
+            <div style={{background:C2.card,borderRadius:14,padding:16,marginBottom:10,boxShadow:"0 1px 3px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:11,fontWeight:800,color:C2.blue,marginBottom:10}}>How sync works</div>
+              <div style={{fontSize:12,color:C2.textM,lineHeight:2}}>
+                ✅ <strong>Add task/meeting</strong> → auto-pushes to Google Calendar<br/>
+                🗑 <strong>Delete item</strong> → removes from Google Calendar too<br/>
+                ⬇️ <strong>Pull button</strong> → imports new GCal events into app<br/>
+                📱 <strong>Cross-device</strong> → use Pull on any device to stay in sync<br/>
+                ⏰ <strong>30-min alarm</strong> → set automatically on all GCal events
+              </div>
+            </div>
+
+            {/* Stats */}
+            <div style={{background:C2.card,borderRadius:14,padding:16,marginBottom:10,boxShadow:"0 1px 3px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:11,fontWeight:800,color:C2.textL,letterSpacing:2,textTransform:"uppercase",marginBottom:10}}>Stats</div>
+              <div style={{fontSize:12,color:C2.textM,lineHeight:2.2}}>
+                Total items: <strong>{items.length}</strong><br/>
+                Synced to GCal: <strong style={{color:C2.green}}>{items.filter(i=>i.synced||i.fromGcal).length}</strong><br/>
+                App-only (not yet synced): <strong style={{color:C2.amber}}>{items.filter(i=>!i.synced&&!i.fromGcal).length}</strong><br/>
+                Reminders: <strong>{reminders.length}</strong>
+              </div>
+            </div>
+
+            {/* Sync log */}
+            {syncLog.length>0&&<div style={{background:C2.card,borderRadius:14,padding:16,boxShadow:"0 1px 3px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:11,fontWeight:800,color:C2.textL,letterSpacing:2,textTransform:"uppercase",marginBottom:10}}>Activity Log</div>
+              {syncLog.map((l,i)=><div key={i} style={{fontSize:11,color:l.ok?C2.green:C2.red,padding:"4px 0",borderBottom:`1px solid ${C2.border}`,display:"flex",gap:8}}><span style={{color:C2.textL,fontSize:9,flexShrink:0}}>{l.ts}</span>{l.msg}</div>)}
+            </div>}
+          </>);
+        })()}
+        {tab==="reminders" && (
+          <div style={S.card}>
+            <div style={S.secTitle}>All Reminders</div>
+            {reminders.length===0?<div style={S.empty}><div style={{fontSize:36,marginBottom:6}}>🔔</div>No reminders</div>
+              :[...reminders].sort((a,b)=>new Date(`${a.date}T${a.time}`)-new Date(`${b.date}T${b.time}`)).map(r=>(
+                <div key={r.id} style={S.remCard}>
+                  <div style={{flex:1}}><div style={{fontSize:14,fontWeight:700,color:"#92400E",marginBottom:4}}>🔔 {r.title}</div><div style={{display:"flex",gap:6}}><span style={{...S.tTag,color:C.amber,background:"#FEF3C7"}}>📅 {r.date}</span><span style={{...S.tTag,color:C.amber,background:"#FEF3C7"}}>{fmt(r.time)}</span></div>{r.notes&&<div style={{fontSize:10,color:"#92400E80",marginTop:3}}>{r.notes}</div>}</div>
+                  <button style={S.delBtn} onClick={()=>deleteReminder(r.id)}>✕</button>
+                </div>
+              ))
+            }
+          </div>
+        )}
+      </div>
+
+      {tab!=="alarms"&&<button style={S.fab(tab==="reminders"?C.amber:C.blue)} onClick={()=>{ if(tab==="reminders"){setRform(blankR);setModal("reminder");}else{setForm(blank);setModal("task");} }}>+</button>}
+
+      <div style={S.nav}>
+        {[["alarms","⏰","Alarms"],["week","📅","Week"],["all","📋","All"],["reminders","🔔","Alerts"],["sync","🔗","Sync"]].map(([k,icon,l])=>(
+          <button key={k} style={S.navBtn(tab===k)} onClick={()=>setTab(k)}>
+            <span>{icon}</span><span style={S.navLbl(tab===k)}>{l}</span>
+            {k==="alarms"&&totalAlerts>0&&<span style={S.navAlert}/>}
+          </button>
+        ))}
+      </div>
+
+      {modal==="task"&&(
+        <div style={S.overlay} onClick={()=>setModal(null)}><div style={S.sheet} onClick={e=>e.stopPropagation()}>
+          <div style={S.mTitle}>➕ New {isApt?"Meeting":"Task"}</div>
+          <div style={S.lbl}>Type</div><div style={S.segRow}><button style={S.seg(form.type==="task","#DC2626","#FEF2F2")} onClick={()=>setForm({...form,type:"task"})}>✅ Task</button><button style={S.seg(form.type==="appointment",C.blue,C.blueL)} onClick={()=>setForm({...form,type:"appointment"})}>📅 Meeting</button></div>
+          <div style={S.lbl}>Category</div><div style={S.segRow}><button style={S.seg(form.category==="work",C.blue,C.blueL)} onClick={()=>setForm({...form,category:"work"})}>💼 Work</button><button style={S.seg(form.category==="personal",C.purple,C.purpleL)} onClick={()=>setForm({...form,category:"personal"})}>🏠 Personal</button></div>
+          <input style={S.inp} placeholder={isApt?"Meeting title...":"Task title..."} value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/>
+          {!isApt&&<><div style={S.lbl}>Priority</div><div style={S.priRow}>{["high","medium","low"].map(p=><button key={p} style={S.priBtn(form.priority===p,p)} onClick={()=>setForm({...form,priority:p})}>{PRIORITY[p].label}</button>)}</div></>}
+          <div style={S.row2}>
+            <div style={{flex:1}}><div style={S.lbl}>Date</div><input type="date" style={{...S.inp,marginBottom:0}} value={form.dueDate} onChange={e=>setForm({...form,dueDate:e.target.value})}/></div>
+            {!isApt&&<div style={{flex:1}}><div style={S.lbl}>Time (opt.)</div><input type="time" style={{...S.inp,marginBottom:0}} value={form.dueTime} onChange={e=>setForm({...form,dueTime:e.target.value})}/></div>}
+          </div>
+          {isApt&&<><div style={{height:7}}/><div style={S.row2}><div style={{flex:1}}><div style={S.lbl}>Start</div><input type="time" style={{...S.inp,marginBottom:0}} value={form.startTime} onChange={e=>setForm({...form,startTime:e.target.value})}/></div><div style={{flex:1}}><div style={S.lbl}>End</div><input type="time" style={{...S.inp,marginBottom:0}} value={form.endTime} onChange={e=>setForm({...form,endTime:e.target.value})}/></div></div>{form.startTime&&form.endTime&&toMins(form.endTime)>toMins(form.startTime)&&<div style={{fontSize:11,color:C.blue,marginBottom:6}}>⏱ {durLabel(form.startTime,form.endTime)}</div>}<input style={S.inp} placeholder="Location (optional)..." value={form.location} onChange={e=>setForm({...form,location:e.target.value})}/></>}
+          {!isApt&&<><div style={S.lbl}>Est. Time</div><div style={S.estRow}>{[30,60,90,120].map(m=><button key={m} style={S.estBtn(form.estimatedMins===m)} onClick={()=>setForm({...form,estimatedMins:m})}>{m<60?m+"m":m/60+"h"}</button>)}</div></>}
+          <div style={S.lbl}>Repeat</div><div style={S.recRow}>{RECURRENCE_OPTS.map(r=><button key={r.value} style={S.recBtn(form.recurrence===r.value)} onClick={()=>setForm({...form,recurrence:r.value})}>{r.label}</button>)}</div>
+          <div style={S.lbl}>Notes (optional)</div>
+          <textarea style={S.textarea} placeholder="Notes, specs, contact info…" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
+          {((form.type==="task"&&form.priority==="high"&&form.dueTime)||(form.type==="appointment"&&form.startTime))&&<div style={{background:"#FEF3C7",border:"1.5px solid #FDE68A",borderRadius:10,padding:"8px 12px",marginBottom:8,fontSize:11,color:C.amber,fontWeight:600}}>⏰ Alarm will fire 30 min before</div>}
+          <button style={S.aBtn(isApt?C.blue:C.red)} onClick={addItem}>{isApt?"📅 Add Meeting":"✅ Add Task"}</button>
+          <button style={S.cancelBtn} onClick={()=>setModal(null)}>Cancel</button>
+        </div></div>
+      )}
+
+      {modal==="reminder"&&(
+        <div style={S.overlay} onClick={()=>setModal(null)}><div style={S.sheet} onClick={e=>e.stopPropagation()}>
+          <div style={S.mTitle}>🔔 New Reminder</div>
+          <input style={S.inp} placeholder="Reminder title..." value={rform.title} onChange={e=>setRform({...rform,title:e.target.value})}/>
+          <div style={S.row2}><div style={{flex:1}}><div style={S.lbl}>Date</div><input type="date" style={{...S.inp,marginBottom:0}} value={rform.date} onChange={e=>setRform({...rform,date:e.target.value})}/></div><div style={{flex:1}}><div style={S.lbl}>Time</div><input type="time" style={{...S.inp,marginBottom:0}} value={rform.time} onChange={e=>setRform({...rform,time:e.target.value})}/></div></div>
+          <div style={{height:7}}/><input style={S.inp} placeholder="Notes..." value={rform.notes} onChange={e=>setRform({...rform,notes:e.target.value})}/>
+          <button style={S.aBtn(C.amber)} onClick={addReminder}>🔔 Set Reminder</button>
+          <button style={S.cancelBtn} onClick={()=>setModal(null)}>Cancel</button>
+        </div></div>
+      )}
+
+      {deferItem&&<div style={S.overlay} onClick={()=>setDeferItem(null)}><div style={{...S.sheet,padding:"18px 15px 36px"}} onClick={e=>e.stopPropagation()}><div style={S.mTitle}>↷ Defer to Next Week</div><div style={{fontSize:14,color:C.textM,marginBottom:12}}>Move <strong>"{deferItem.title}"</strong>?</div><div style={{background:C.greenL,border:"1.5px solid #A7F3D0",borderRadius:11,padding:"11px",marginBottom:14,fontSize:13,color:"#065F46"}}>New date: <strong>{toKey(addDays(new Date(deferItem.dueDate),7))}</strong></div><button style={S.aBtn(C.purple)} onClick={()=>deferToNextWeek(deferItem)}>↷ Move to Next Week</button><button style={S.cancelBtn} onClick={()=>setDeferItem(null)}>Cancel</button></div></div>}
+
+      {extendItem&&<div style={S.overlay} onClick={()=>setExtendItem(null)}><div style={{...S.sheet,padding:"18px 15px 36px"}} onClick={e=>e.stopPropagation()}><div style={S.mTitle}>+ Add More Time</div><div style={{fontSize:13,color:C.textM,marginBottom:4}}>"{extendItem.title}"</div><div style={{fontSize:11,color:C.textL,marginBottom:14}}>Current: <strong>{extendItem.estimatedMins||60}m</strong></div><div style={{display:"flex",gap:7,marginBottom:10}}>{[30,60,90,120].map(m=><button key={m} style={{flex:1,padding:"13px 0",borderRadius:11,border:`1.5px solid ${C.border}`,background:"#F8FAFC",color:C.blue,fontWeight:800,fontSize:13,cursor:"pointer"}} onClick={()=>extendTime(extendItem,m)}>+{m<60?m+"m":m/60+"h"}</button>)}</div><button style={S.cancelBtn} onClick={()=>setExtendItem(null)}>Cancel</button></div></div>}
+
+      {detailItem&&<DetailModal/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
