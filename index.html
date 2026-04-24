@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-title" content="TaskMaster Pro"/>
 <title>TaskMaster Pro</title>
 <style>
-  *{box-sizing:border-box;-webkit-tap-highlight-color:transpahrent;}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   body{margin:0;padding:0;background:#F1F5F9;font-family:'DM Sans','Segoe UI',sans-serif;}
-  input,textarea,button,select{font-family:inherit;}h
+  input,textarea,button,select{font-family:inherit;}
   /* prevent iOS zoom on input focus */
   input[type="text"],input[type="date"],input[type="time"],textarea{font-size:16px!important;}
 </style>
@@ -40,7 +40,7 @@ const GCAL_TOKEN_KEY = "taskmaster_gcal_token";
 // STEP 3: APIs & Services → Credentials → Create OAuth 2.0 Client ID (Web app)
 // STEP 4: Add your file path or hosting URL to "Authorized JavaScript Origins"
 //         e.g.  file:///  (for local file)  OR  https://yourdomain.com
-// STEP 5: Copy the Client ID and paste it below replacing 859742900088-8d3lfkantkgcsp23m1o06u52c02o2a5q
+// STEP 5: Copy the Client ID and paste it below replacing YOUR_CLIENT_ID_HERE
 const GCAL_CLIENT_ID = "859742900088-8d3lfkantkgcsp23m1o06u52c02o2a5q.apps.googleusercontent.com";
 const GCAL_SCOPE     = "https://www.googleapis.com/auth/calendar";
 const GCAL_BASE      = "https://www.googleapis.com/calendar/v3";
@@ -110,8 +110,7 @@ function gcalEventToItem(ev) {
     startTime: isApt ? startT : "",
     endTime: isApt ? endT : "",
     location: ev.location || "",
-    notes: (ev.description||"").replace(/\[TaskMaster Pro\][^
-]*/,"").trim(),
+    notes: (ev.description||"").replace(/\[TaskMaster Pro\][^\n]*/,"").trim(),
     recurrence: "none",
     done: false,
     fromGcal: true,
@@ -936,7 +935,7 @@ function App() {
                   3. APIs &amp; Services → Credentials → <strong>Create OAuth 2.0 Client ID</strong> (Web app)<br/>
                   4. Add <code>file:///</code> to Authorized JavaScript Origins<br/>
                   5. Copy the Client ID and open this HTML file in a text editor<br/>
-                  6. Replace <code>859742900088-8d3lfkantkgcsp23m1o06u52c02o2a5q</code> near the top with your Client ID<br/>
+                  6. Replace <code>YOUR_CLIENT_ID_HERE</code> near the top with your Client ID<br/>
                   7. Save and reopen the HTML file
                 </div>}
                 {syncStatus&&<div style={{marginTop:10,background:"#FEF2F2",border:"1.5px solid #FECACA",borderRadius:10,padding:"9px 12px",fontSize:12,color:C2.red}}>{syncStatus}</div>}
