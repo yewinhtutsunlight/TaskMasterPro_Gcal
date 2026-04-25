@@ -292,7 +292,14 @@ function App() {
   const [focusMode, setFocusMode]     = useState(false);
   const [energyFilter, setEnergyFilter] = useState(null); // active energy tag filter
   const [showCompleted, setShowCompleted] = useState(false); // accordion for completed tasks
-  const [expandedSubtasks, setExpandedSubtasks] = useState(new Set()); // which tasks show subtasks
+  const [expandedSubtasks, setExpandedSubtasks] = useState(new Set());
+  const [quickOpen, setQuickOpen]   = useState(false);
+  const [qTitle, setQTitle]         = useState("");
+  const [qDate, setQDate]           = useState(todayKey());
+  const [qPriority, setQPriority]   = useState("medium");
+  const qRef = useRef(null);
+  const [subInputs, setSubInputs]   = useState({});
+  const setSubInput = (id, val) => setSubInputs(p=>({...p,[id]:val}));
   const [alarmingItems, setAlarmingItems] = useState([]);
   const [overdueAlarms, setOverdueAlarms] = useState([]);
   const [snoozedIds, setSnoozedIds]   = useState(new Set());
@@ -1214,7 +1221,7 @@ function App() {
     const priDot = p => ({high:"#DC2626",medium:"#F97316",low:"#3B82F6",undefined:"#D1D5DB"}[p]||"#D1D5DB");
 
     const TaskRow = ({item}) => {
-      const [subInput, setSubInput] = useState("");
+      const subInput = subInputs[item.id] || "";
       const subtasks = item.subtasks||[];
       const subDone = subtasks.filter(s=>s.done).length;
       const subTotal = subtasks.length;
@@ -1259,10 +1266,10 @@ function App() {
                 ))}
                 <div style={{display:"flex",gap:6,marginTop:5}}>
                   <input style={{flex:1,background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:6,padding:"5px 8px",fontSize:12,outline:"none",fontFamily:"inherit"}}
-                    placeholder="Add sub-task…" value={subInput} onChange={e=>setSubInput(e.target.value)}
-                    onKeyDown={e=>{ if(e.key==="Enter"){addSubtask(item.id,subInput);setSubInput("");}}}
+                    placeholder="Add sub-task…" value={subInput} onChange={e=>setSubInput(item.id, e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter"){addSubtask(item.id,subInput);setSubInput(item.id,"");}}}
                   />
-                  <button onClick={()=>{addSubtask(item.id,subInput);setSubInput("");}} style={{background:"#059669",border:"none",borderRadius:6,padding:"5px 10px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:700}}>+</button>
+                  <button onClick={()=>{addSubtask(item.id,subInput);setSubInput(item.id,"");}} style={{background:"#059669",border:"none",borderRadius:6,padding:"5px 10px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:700}}>+</button>
                 </div>
               </div>}
               {/* Notes preview */}
@@ -1286,12 +1293,7 @@ function App() {
       </div>
     );
 
-    // Quick add inline — Todoist style
-    const [quickOpen, setQuickOpen] = useState(false);
-    const [qTitle, setQTitle] = useState("");
-    const [qDate, setQDate] = useState(todStr);
-    const [qPriority, setQPriority] = useState("medium");
-    const qRef = React.useRef(null);
+    // Quick add inline — Todoist style (state at top level)
 
     const quickSubmit = () => {
       if(!qTitle.trim()) return;
@@ -1299,7 +1301,7 @@ function App() {
         id:`user_${Date.now()}`, title:qTitle.trim(), done:false, createdAt:new Date().toISOString() };
       const updated=[...items,item]; const clean=persist(updated,null); setItems(clean);
       if(gcalToken) setTimeout(()=>pushToGcal(item),100);
-      setQTitle(""); setQDate(todStr); setQPriority("medium"); setQuickOpen(false);
+      setQTitle(""); setQDate(todayKey()); setQPriority("medium"); setQuickOpen(false);
     };
 
     return (
