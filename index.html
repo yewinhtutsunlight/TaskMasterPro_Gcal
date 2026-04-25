@@ -47,13 +47,23 @@ const GCAL_BASE      = "https://www.googleapis.com/calendar/v3";
 const IS_CONFIGURED  = !GCAL_CLIENT_ID.startsWith("YOUR_CLIENT");
 
 // ─── GOOGLE CALENDAR API HELPERS ──────────────────────────────────────────────
-async function gcalFetch(token, path, method="GET", body=null) {
+async function gcalFetch(token, path, method="GET", body=null, retries=2) {
   const opts = { method, headers:{ Authorization:"Bearer "+token, "Content-Type":"application/json" } };
   if(body) opts.body = JSON.stringify(body);
-  const res = await fetch(GCAL_BASE+path, opts);
-  if(!res.ok) throw new Error("GCal API error "+res.status);
-  if(res.status===204) return null;
-  return res.json();
+  for(let attempt=0; attempt<=retries; attempt++) {
+    try {
+      const res = await fetch(GCAL_BASE+path, opts);
+      if(!res.ok) {
+        const errData = await res.json().catch(()=>({}));
+        throw new Error("GCal API error "+res.status+": "+(errData.error?.message||res.statusText));
+      }
+      if(res.status===204) return null;
+      return res.json();
+    } catch(e) {
+      if(attempt===retries) throw e;
+      await new Promise(r=>setTimeout(r, 1000));
+    }
+  }
 }
 
 async function gcalListEvents(token) {
@@ -120,19 +130,8 @@ function gcalEventToItem(ev) {
   };
 }
 
-// ─── REAL GCAL SEED ───────────────────────────────────────────────────────────
-const GCAL_SEED = [
-  { id:"fcm_0424", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-04-24", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"fcm_0501", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-01", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"fcm_0508", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-08", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"fcm_0515", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-15", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"fcm_0522", type:"appointment", category:"work", title:"Factory Construction Meeting", priority:"medium", dueDate:"2026-05-22", startTime:"08:30", endTime:"09:30", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"cck_0421", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-04-21", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"cck_0428", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-04-28", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"cck_0505", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-05-05", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"cck_0512", type:"appointment", category:"work", title:"CCKWW Weekly Meeting", priority:"medium", dueDate:"2026-05-12", startTime:"09:30", endTime:"11:00", recurrence:"weekly", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-  { id:"wfm_0422", type:"appointment", category:"work", title:"Weekly Forecast Meeting", priority:"medium", dueDate:"2026-04-22", startTime:"10:00", endTime:"12:00", recurrence:"none", fromGcal:true, synced:true, done:false, notes:"", location:"", estimatedMins:null, actionItems:[], createdAt:"2026-04-17T00:00:00Z" },
-];
+// GCAL_SEED removed — use Pull from GCal to import events
+const GCAL_SEED = [];
 
 const PRIORITY = {
   high:   { label:"HIGH",   color:"#DC2626", bg:"#FEF2F2", border:"#FECACA" },
@@ -230,13 +229,20 @@ function loadData() {
     if(raw){
       const d=JSON.parse(raw);
       const seenIds=new Set();
-      const deduped=(d.items||[]).filter(i=>{ if(seenIds.has(i.id)) return false; seenIds.add(i.id); return true; });
+      // Deduplicate by id AND by gcalId to prevent double-sync duplicates
+      const seenGcalIds=new Set();
+      const deduped=(d.items||[]).filter(i=>{
+        if(seenIds.has(i.id)) return false;
+        if(i.gcalId && seenGcalIds.has(i.gcalId)) return false;
+        seenIds.add(i.id);
+        if(i.gcalId) seenGcalIds.add(i.gcalId);
+        return true;
+      });
       const withActions=deduped.map(i=>({actionItems:[],...i}));
-      const newSeed=GCAL_SEED.filter(s=>!seenIds.has(s.id));
-      return { items:[...withActions,...newSeed], reminders:d.reminders||[] };
+      return { items:withActions, reminders:d.reminders||[] };
     }
-    return { items:GCAL_SEED, reminders:[] };
-  } catch { return { items:GCAL_SEED, reminders:[] }; }
+    return { items:[], reminders:[] };
+  } catch { return { items:[], reminders:[] }; }
 }
 function saveData(d) { try { localStorage.setItem(STORAGE_KEY,JSON.stringify(d)); } catch {} }
 function loadSnoozed() { try { return new Set(JSON.parse(localStorage.getItem(SNOOZED_KEY)||"[]")); } catch { return new Set(); } }
@@ -258,6 +264,7 @@ function App() {
   const [filterCat, setFilterCat]     = useState("all");
   const [weekGroup, setWeekGroup]     = useState("type");
   const [allGroup, setAllGroup]       = useState("type");
+  const [calView, setCalView]         = useState("day"); // "day" | "3day" | "week" 
   const [alarmingItems, setAlarmingItems] = useState([]);
   const [overdueAlarms, setOverdueAlarms] = useState([]);
   const [snoozedIds, setSnoozedIds]   = useState(new Set());
@@ -271,6 +278,9 @@ function App() {
 
   // ── GOOGLE CALENDAR OAUTH & SYNC STATE ──
   const [gcalToken, setGcalToken]   = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // item to confirm delete
+  const [showPWABanner, setShowPWABanner] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [gcalUser, setGcalUser]     = useState(null);
   const [syncStatus, setSyncStatus] = useState("");
   const [syncing, setSyncing]       = useState(false);
@@ -281,6 +291,13 @@ function App() {
   const blankR = { title:"", date:todayKey(), time:"09:00", notes:"" };
   const [form, setForm]   = useState(blank);
   const [rform, setRform] = useState(blankR);
+
+  // PWA install prompt
+  useEffect(() => {
+    const handler = (e) => { e.preventDefault(); setDeferredPrompt(e); setShowPWABanner(true); };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
 
   useEffect(() => {
     const d=loadData(); setItems(d.items); setReminders(d.reminders);
@@ -333,18 +350,27 @@ function App() {
     setSyncing(true); setSyncStatus("⏳ Pulling from Google Calendar...");
     try {
       const events = await gcalListEvents(gcalToken);
-      const current = [...items]; const seenIds = new Set(current.map(i=>i.gcalId).filter(Boolean));
-      let added=0;
+      const current = [...items];
+      // Build dedup sets from both gcalId and taskmaster_id
+      const seenGcalIds = new Set(current.map(i=>i.gcalId).filter(Boolean));
+      const seenTaskIds = new Set(current.map(i=>i.id).filter(Boolean));
+      let added=0, updated=0;
       for(const ev of events) {
-        if(ev.summary?.includes("TaskMaster")) continue; // skip our own summary events
-        if(!seenIds.has(ev.id)) {
-          const item = gcalEventToItem(ev);
-          // If we created this item (has taskmaster_id), update not duplicate
-          const existingIdx = current.findIndex(i=>i.id===item.id);
-          if(existingIdx>=0) { current[existingIdx]={...current[existingIdx], gcalId:ev.id, synced:true}; }
-          else { current.push(item); added++; }
-          seenIds.add(ev.id);
+        // Skip events pushed by TaskMaster (they already exist by taskmaster_id)
+        const tid = ev.extendedProperties?.private?.taskmaster_id;
+        if(tid && seenTaskIds.has(tid)) {
+          // Update gcalId if missing
+          const idx = current.findIndex(i=>i.id===tid);
+          if(idx>=0 && !current[idx].gcalId) { current[idx]={...current[idx], gcalId:ev.id, synced:true}; updated++; }
+          continue;
         }
+        if(seenGcalIds.has(ev.id)) continue; // already have this gcal event
+        const item = gcalEventToItem(ev);
+        // Strip HTML tags from notes
+        item.notes = item.notes.replace(/<[^>]*>/g,'').trim();
+        current.push(item); added++;
+        seenGcalIds.add(ev.id);
+        seenTaskIds.add(item.id);
       }
       const clean = persist(current, null); setItems(clean);
       const msg = `✅ Pulled ${added} new event${added!==1?"s":""} from Google Calendar`;
@@ -458,8 +484,15 @@ function App() {
   const toggleDone = id => { const u=items.map(i=>i.id===id?{...i,done:!i.done}:i); setItems(u); persist(u,null); };
   const deleteItem = id => {
     const item = items.find(i=>i.id===id);
-    const u=items.filter(i=>i.id!==id); setItems(u); persist(u,null); if(detailItem?.id===id) setDetailItem(null);
+    const u=items.filter(i=>i.id!==id); setItems(u); persist(u,null);
+    if(detailItem?.id===id) setDetailItem(null);
     if(gcalToken && item?.gcalId) deleteFromGcal(item.gcalId);
+  };
+  // Soft "cancel" for meetings — marks done without deleting
+  const cancelItem = id => {
+    const u=items.map(i=>i.id===id?{...i,done:true,cancelled:true}:i);
+    setItems(u); persist(u,null);
+    if(detailItem?.id===id) setDetailItem(u.find(i=>i.id===id));
   };
   const deleteReminder = id => { const r=reminders.filter(r=>r.id!==id); setReminders(r); persist(null,r); };
   const updateItemField = (id, fields) => {
@@ -636,7 +669,20 @@ function App() {
                 <span style={S.chip(C.blue,"#EFF6FF")} onClick={()=>setDetailItem(item)}>✏️ Edit / Details</span>
                 {!isApt&&!item.done&&<span style={S.chip(C.purple,C.purpleL)} onClick={()=>setDeferItem(item)}>↷</span>}
                 {!isApt&&!item.done&&<span style={S.chip(C.blue,C.blueL)} onClick={()=>setExtendItem(item)}>+ Time</span>}
+                {isApt&&!item.done&&<span style={S.chip("#6B7280","#F3F4F6")} onClick={()=>cancelItem(item.id)}>✕ Cancel</span>}
+                {!isApt&&<span style={S.chip(C.red,C.redL)} onClick={()=>setDeleteConfirm(item)}>🗑</span>}
               </div>
+              {/* Action items preview on card */}
+              {(item.actionItems||[]).filter(a=>!a.done).length>0&&(
+                <div style={{marginTop:5,paddingTop:5,borderTop:`1px solid ${C.border}`}}>
+                  {(item.actionItems||[]).filter(a=>!a.done).slice(0,2).map(a=>(
+                    <div key={a.id} style={{fontSize:11,color:"#0D9488",display:"flex",gap:5,alignItems:"center",marginBottom:2}}>
+                      <span>→</span><span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.text}</span>
+                    </div>
+                  ))}
+                  {(item.actionItems||[]).filter(a=>!a.done).length>2&&<div style={{fontSize:10,color:C.textL}}>+{(item.actionItems||[]).filter(a=>!a.done).length-2} more</div>}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -772,7 +818,19 @@ function App() {
   // ── ALARM TAB ──
   const renderAlarms = () => (
     <>
-      {notifPerm!=="granted"&&<div style={S.notifBanner}><div><div style={{fontSize:12,fontWeight:700,color:C.blue}}>🔔 Enable phone notifications</div><div style={{fontSize:10,color:C.textL,marginTop:2}}>Get alarms when app is minimised</div></div><button style={{background:C.blue,border:"none",borderRadius:9,padding:"7px 14px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={requestNotif}>Enable</button></div>}
+      {notifPerm!=="granted"&&(<div>
+        <div style={S.notifBanner}>
+          <div><div style={{fontSize:12,fontWeight:700,color:C.blue}}>🔔 Enable phone notifications</div><div style={{fontSize:10,color:C.textL,marginTop:2}}>Get alarms when app is minimised</div></div>
+          <button style={{background:C.blue,border:"none",borderRadius:9,padding:"7px 14px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={requestNotif}>Enable</button>
+        </div>
+        {/iPhone|iPad|iPod/.test(navigator.userAgent)&&<div style={{background:"#FEF3C7",border:"1.5px solid #FDE68A",borderRadius:12,padding:"10px 13px",marginBottom:12,fontSize:11,color:"#92400E",lineHeight:1.8}}>
+          <strong>📱 iPhone: Add to Home Screen first</strong><br/>
+          1. Tap the <strong>Share</strong> button (□↑) in Safari<br/>
+          2. Tap <strong>"Add to Home Screen"</strong><br/>
+          3. Open the app from your home screen<br/>
+          4. Then tap Enable above — notifications will work!
+        </div>}
+      </div>)}
       <div style={{...S.card,background:"linear-gradient(135deg,#EFF6FF,#F0FDF4)",border:`1.5px solid ${C.blueL}`,marginBottom:12}}>
         <div style={{fontSize:11,fontWeight:800,color:C.blue,marginBottom:7}}>⏰ Alarm Settings</div>
         <div style={{fontSize:11,color:C.textM,lineHeight:1.9}}>Triggers: 🔴 HIGH priority tasks · 📅 All meetings<br/>Fires: 30 min before due time · In-app check: every 15 min<br/>{notifPerm==="granted"?"✅ Browser notifications active":"⚠️ Browser notifications — tap Enable above"}</div>
@@ -807,13 +865,19 @@ function App() {
   const renderWeek = () => {
     const pct=weekTasks.length?(weekDone.length/weekTasks.length)*100:0;
     return (<>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div><div style={{fontSize:14,fontWeight:900,color:C.text}}>{isCurrentWk?"This Week":"Week of "+MONTHS[weekDates[0].getMonth()]+" "+weekDates[0].getDate()}</div><div style={{fontSize:10,color:C.textL}}>{weekDates[0].getDate()} {MONTHS[weekDates[0].getMonth()]} – {weekDates[6].getDate()} {MONTHS[weekDates[6].getMonth()]}</div></div>
         <div style={{display:"flex",gap:5}}>
           <button style={{background:C.blueL,border:"none",color:C.blue,borderRadius:8,padding:"5px 10px",cursor:"pointer",fontWeight:700,fontSize:14}} onClick={()=>setWeekBase(addDays(weekBase,-7))}>‹</button>
           {!isCurrentWk&&<button style={{background:C.blueL,border:"none",color:C.blue,borderRadius:8,padding:"5px 9px",cursor:"pointer",fontWeight:700,fontSize:10}} onClick={()=>setWeekBase(new Date())}>Now</button>}
           <button style={{background:C.blueL,border:"none",color:C.blue,borderRadius:8,padding:"5px 10px",cursor:"pointer",fontWeight:700,fontSize:14}} onClick={()=>setWeekBase(addDays(weekBase,7))}>›</button>
         </div>
+      </div>
+      {/* View mode toggle */}
+      <div style={{display:"flex",gap:5,marginBottom:10}}>
+        {[["day","📅 Day"],["3day","📅 3-Day"],["week","📅 Week"]].map(([v,l])=>(
+          <button key={v} style={{flex:1,padding:"6px 0",borderRadius:9,border:`1.5px solid ${calView===v?C.blue:C.border}`,background:calView===v?C.blueL:"#F8FAFC",color:calView===v?C.blue:C.textL,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>setCalView(v)}>{l}</button>
+        ))}
       </div>
       <div style={S.pillRow}>
         {(filterType==="all"||filterType==="task")&&<div style={S.pill(C.red,C.redL)}>🔴 {weekPending.length} pending</div>}
@@ -822,23 +886,112 @@ function App() {
         {(filterType==="all"||filterType==="task")&&<div style={S.pill(C.green,C.greenL)}>✅ {weekDone.length} done</div>}
       </div>
       {weekTasks.length>0&&<div style={{...S.card,padding:"10px 13px",marginBottom:10}}><div style={{display:"flex",alignItems:"center",gap:9}}><span style={{fontSize:11,color:C.textM,flexShrink:0}}>{weekDone.length}/{weekTasks.length}</span><div style={S.progWrap}><div style={S.progFill(pct)}/></div><span style={{fontSize:11,color:C.blue,fontWeight:800,flexShrink:0}}>{Math.round(pct)}%</span></div></div>}
+      {/* Day picker row — always shown */}
       <div style={S.weekRow}>
         {weekDates.map((date,i)=>{ const dk=toKey(date); const di=items.filter(x=>x.dueDate===dk); const hasTsk=di.some(x=>x.type==="task"&&!x.done); const hasApt=di.some(x=>x.type==="appointment"); const hasRem=reminders.some(r=>r.date===dk); const isSel=sameDay(date,selDate),isTod=sameDay(date,today); return (<div key={i} style={S.wDay(isSel,isTod)} onClick={()=>setSelDate(date)}><div style={S.wDName(isSel)}>{DAYS_SHORT[date.getDay()]}</div><div style={S.wDNum(isSel,isTod)}>{date.getDate()}</div><div style={S.wDDots}>{hasTsk&&<div style={S.dot(C.red)}/>}{hasApt&&<div style={S.dot(C.blue)}/>}{hasRem&&<div style={S.dot(C.amber)}/>}</div></div>); })}
       </div>
-      <div style={S.card}>
+      {/* Day view */}
+      {calView==="day"&&<div style={S.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <div style={S.secTitle}>{DAYS_FULL[selDate.getDay()]}, {MONTHS[selDate.getMonth()]} {selDate.getDate()}</div>
           <div style={{display:"flex",gap:4}}>{["type","priority","category"].map(g=><button key={g} style={S.groupBtn(weekGroup===g,C.blue)} onClick={()=>setWeekGroup(g)}>{g==="type"?"Type":g==="priority"?"Pri":"Cat"}</button>)}</div>
         </div>
         {calItems.length===0&&calReminders.length===0?<div style={S.empty}><div style={{fontSize:28,marginBottom:4}}>📋</div>Nothing to show{filterType!=="all"?" — try changing filter":""}</div>:<BreakdownSection groupMode={weekGroup} itemList={calItems}/>}
         {calReminders.map(r=><div key={r.id} style={S.remCard}><div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:"#92400E",marginBottom:3}}>🔔 {r.title}</div><span style={{...S.tTag,color:C.amber,background:"#FEF3C7"}}>{fmt(r.time)}</span></div><button style={S.delBtn} onClick={()=>deleteReminder(r.id)}>✕</button></div>)}
-      </div>
+      </div>}
+      {/* 3-day view */}
+      {calView==="3day"&&(()=>{
+        const d0=selDate; const d1=addDays(d0,1); const d2=addDays(d0,2);
+        return (
+          <div style={{display:"flex",gap:6,overflowX:"auto"}}>
+            {[d0,d1,d2].map((date,ci)=>{
+              const dk=toKey(date); const isTod=sameDay(date,today);
+              const dayItems=applyFilter(items.filter(i=>i.dueDate===dk).sort((a,b)=>(a.startTime||a.dueTime||"99:99").localeCompare(b.startTime||b.dueTime||"99:99")));
+              return (
+                <div key={ci} style={{flex:"0 0 calc(33.33% - 4px)",minWidth:0,background:C.card,borderRadius:12,padding:"8px 6px",boxShadow:"0 1px 3px rgba(0,0,0,0.07)",border:isTod?`2px solid ${C.blue}`:"1.5px solid "+C.border}}>
+                  <div style={{fontSize:10,fontWeight:800,color:isTod?C.blue:C.textL,textAlign:"center",marginBottom:6,textTransform:"uppercase"}}>{DAYS_SHORT[date.getDay()]} {date.getDate()}</div>
+                  {dayItems.length===0?<div style={{fontSize:10,color:C.textL,textAlign:"center",padding:"8px 0"}}>—</div>:dayItems.map(item=>{
+                    const isApt=item.type==="appointment";
+                    const t=isApt?item.startTime:item.dueTime;
+                    return (
+                      <div key={item.id} style={{background:isApt?C.blueL:PRIORITY[item.priority].bg,borderLeft:`3px solid ${isApt?C.blue:PRIORITY[item.priority].color}`,borderRadius:6,padding:"4px 5px",marginBottom:4,cursor:"pointer"}} onClick={()=>setDetailItem(item)}>
+                        <div style={{fontSize:11,fontWeight:700,color:C.text,lineHeight:1.2,marginBottom:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.title}</div>
+                        {t&&<div style={{fontSize:9,color:C.textM}}>{fmt(t)}</div>}
+                        {!isApt&&<div style={{fontSize:9,color:PRIORITY[item.priority].color,fontWeight:700}}>{PRIORITY[item.priority].label}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+      {/* Full week view */}
+      {calView==="week"&&(()=>{
+        return (
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {weekDates.map((date,wi)=>{
+              const dk=toKey(date); const isTod=sameDay(date,today);
+              const dayItems=applyFilter(items.filter(i=>i.dueDate===dk).sort((a,b)=>(a.startTime||a.dueTime||"99:99").localeCompare(b.startTime||b.dueTime||"99:99")));
+              if(dayItems.length===0) return null;
+              return (
+                <div key={wi} style={{background:C.card,borderRadius:12,padding:"9px 10px",boxShadow:"0 1px 3px rgba(0,0,0,0.07)",border:isTod?`2px solid ${C.blue}`:"1.5px solid "+C.border}}>
+                  <div style={{fontSize:10,fontWeight:800,color:isTod?C.blue:C.textL,textTransform:"uppercase",marginBottom:6}}>{DAYS_FULL[date.getDay()]} {date.getDate()}</div>
+                  {dayItems.map(item=>{
+                    const isApt=item.type==="appointment"; const t=isApt?item.startTime:item.dueTime;
+                    return (
+                      <div key={item.id} style={{display:"flex",gap:8,alignItems:"center",padding:"5px 0",borderBottom:`1px solid ${C.border}`,cursor:"pointer"}} onClick={()=>setDetailItem(item)}>
+                        <div style={{width:3,height:36,borderRadius:2,background:isApt?C.blue:PRIORITY[item.priority].color,flexShrink:0}}/>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12,fontWeight:700,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.title}</div>
+                          <div style={{fontSize:10,color:C.textL}}>{t?fmt(t):""} {isApt?"":`· ${PRIORITY[item.priority].label}`}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
       {allOverdue.length>0&&isCurrentWk&&(filterType==="all"||filterType==="task")&&<div style={S.card}><div style={S.secTitle}>⚠️ Overdue</div>{allOverdue.map(i=><ItemCard key={i.id} item={i} showDate/>)}</div>}
       {suggestions.length>0&&(filterType==="all"||filterType==="task")&&<div style={S.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><div style={S.secTitle}>✨ Suggestions</div><button style={{background:"none",border:"none",color:C.textL,fontSize:11,cursor:"pointer"}} onClick={()=>setShowSuggest(!showSuggest)}>{showSuggest?"Hide":"Show"}</button></div>{!showSuggest?<div style={{fontSize:12,color:C.textL}}>{suggestions.length} tasks need a time slot</div>:suggestions.map(sug=><div key={sug.taskId} style={S.sugCard}><div style={{fontSize:13,fontWeight:700,color:"#065F46",marginBottom:3}}>"{sug.taskTitle}"</div><div style={{fontSize:11,color:"#059669",marginBottom:8}}>💡 {sug.dayLabel} · {fmt(sug.sugStart)} – {fmt(sug.sugEnd)}</div><div style={{display:"flex",gap:6}}><button style={{flex:1,padding:"7px",borderRadius:9,border:"1.5px solid #059669",background:"#059669",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>acceptSug(sug)}>✓ Accept</button><button style={{flex:1,padding:"7px",borderRadius:9,border:`1.5px solid ${C.border}`,background:"#fff",color:C.textL,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>setSuggestions(p=>p.filter(s=>s.taskId!==sug.taskId))}>Dismiss</button></div></div>)}</div>}
     </>);
   };
 
   // ── ALL TAB ──
+  // Action Items Overview — all pending action items from all meetings
+  const renderActionItemsOverview = () => {
+    const allActions = [];
+    items.filter(i=>i.type==="appointment"&&!i.done).forEach(meeting=>{
+      (meeting.actionItems||[]).filter(a=>!a.done).forEach(action=>{
+        allActions.push({ action, meeting });
+      });
+    });
+    if(!allActions.length) return null;
+    return (
+      <div style={{...S.card,marginBottom:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div style={S.secTitle}>📋 Meeting Action Items</div>
+          <span style={{fontSize:10,color:"#0D9488",background:"#F0FDFA",borderRadius:6,padding:"2px 8px",fontWeight:700}}>{allActions.length} pending</span>
+        </div>
+        {allActions.map(({action,meeting})=>(
+          <div key={action.id} style={{display:"flex",alignItems:"flex-start",gap:9,padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+            <div style={{width:18,height:18,minWidth:18,borderRadius:5,border:"2px solid #0D9488",background:"#fff",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",marginTop:1}} onClick={()=>toggleActionItem(meeting.id,action.id)}>
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,color:C.text,lineHeight:1.4}}>{action.text}</div>
+              <div style={{fontSize:10,color:C.textL,marginTop:2}}>📅 {meeting.title} · {meeting.dueDate}</div>
+            </div>
+            <span style={{fontSize:10,color:C.blue,background:C.blueL,borderRadius:6,padding:"2px 8px",cursor:"pointer",fontWeight:700,flexShrink:0}} onClick={()=>{ promoteActionItem(meeting,action); }}>→ Task</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderAll = () => {
     const allP=items.filter(i=>!i.done&&i.type==="task"); const hi=allP.filter(i=>i.priority==="high").length; const md=allP.filter(i=>i.priority==="medium").length; const lo=allP.filter(i=>i.priority==="low").length; const mt=items.filter(i=>i.type==="appointment"&&!i.done).length;
     return (<>
@@ -849,6 +1002,7 @@ function App() {
         </div>
         <div style={S.groupRow}>{["type","priority","category"].map(g=><button key={g} style={S.groupBtn(allGroup===g,C.blue)} onClick={()=>setAllGroup(g)}>{g==="type"?"By Type":g==="priority"?"By Priority":"By Category"}</button>)}</div>
       </div>
+      {renderActionItemsOverview()}
       <div style={S.card}><BreakdownSection groupMode={allGroup} itemList={allFiltered}/></div>
     </>);
   };
@@ -1030,6 +1184,25 @@ function App() {
           <button style={S.cancelBtn} onClick={()=>setModal(null)}>Cancel</button>
         </div></div>
       )}
+
+      {/* Delete Confirm Modal */}
+      {deleteConfirm&&<div style={S.overlay} onClick={()=>setDeleteConfirm(null)}><div style={{...S.sheet,padding:"18px 15px 36px"}} onClick={e=>e.stopPropagation()}>
+        <div style={S.mTitle}>🗑 Delete Item</div>
+        <div style={{fontSize:14,color:C.textM,marginBottom:12}}>Delete <strong>"{deleteConfirm.title}"</strong>?{deleteConfirm.gcalId?" This will also remove it from Google Calendar.":""}</div>
+        <div style={{display:"flex",gap:8}}>
+          <button style={{...S.aBtn(C.red),flex:1,marginTop:0}} onClick={()=>{ deleteItem(deleteConfirm.id); setDeleteConfirm(null); }}>🗑 Delete</button>
+          <button style={{flex:1,padding:"13px",background:"transparent",border:`1.5px solid ${C.border}`,borderRadius:12,color:C.textL,fontSize:14,fontWeight:700,cursor:"pointer"}} onClick={()=>setDeleteConfirm(null)}>Cancel</button>
+        </div>
+      </div></div>}
+
+      {/* PWA Install Banner */}
+      {showPWABanner&&<div style={{position:"fixed",top:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"#1E40AF",padding:"10px 14px",zIndex:500,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{color:"#fff",fontSize:12,fontWeight:700}}>📱 Add to Home Screen for notifications!</div>
+        <div style={{display:"flex",gap:7}}>
+          <button style={{background:"#fff",border:"none",borderRadius:8,padding:"5px 10px",color:C.blue,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>{ if(deferredPrompt){deferredPrompt.prompt();setShowPWABanner(false);} }}>Install</button>
+          <button style={{background:"none",border:"1.5px solid rgba(255,255,255,0.5)",borderRadius:8,padding:"5px 8px",color:"#fff",fontSize:11,cursor:"pointer"}} onClick={()=>setShowPWABanner(false)}>✕</button>
+        </div>
+      </div>}
 
       {deferItem&&<div style={S.overlay} onClick={()=>setDeferItem(null)}><div style={{...S.sheet,padding:"18px 15px 36px"}} onClick={e=>e.stopPropagation()}><div style={S.mTitle}>↷ Defer to Next Week</div><div style={{fontSize:14,color:C.textM,marginBottom:12}}>Move <strong>"{deferItem.title}"</strong>?</div><div style={{background:C.greenL,border:"1.5px solid #A7F3D0",borderRadius:11,padding:"11px",marginBottom:14,fontSize:13,color:"#065F46"}}>New date: <strong>{toKey(addDays(new Date(deferItem.dueDate),7))}</strong></div><button style={S.aBtn(C.purple)} onClick={()=>deferToNextWeek(deferItem)}>↷ Move to Next Week</button><button style={S.cancelBtn} onClick={()=>setDeferItem(null)}>Cancel</button></div></div>}
 
