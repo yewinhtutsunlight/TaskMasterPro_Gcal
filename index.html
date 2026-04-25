@@ -12,7 +12,7 @@
   @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.3)} }
   @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
   .task-card { animation: fadeIn 0.2s ease; }
-  body{margin:0;padding:0;background:#F1F5F9;font-family:'DM Sans','Segoe UI',sans-serif;}
+  body{margin:0;padding:0;background:#FFFFFF;font-family:'DM Sans','Segoe UI',sans-serif;}
   input,textarea,button,select{font-family:inherit;}
   /* prevent iOS zoom on input focus */
   input[type="text"],input[type="date"],input[type="time"],textarea{font-size:16px!important;}
@@ -82,22 +82,36 @@ async function gcalListEvents(token) {
 
 async function gcalCreateEvent(token, item) {
   const isApt = item.type==="appointment";
-  const startT = isApt ? item.startTime : item.dueTime;
-  const endT   = isApt ? item.endTime   : item.dueTime;
-  const hasTime = startT && startT.length>0;
-  const body = {
-    summary: item.title,
-    description: "[TaskMaster Pro] "+item.category+" "+item.type+(item.notes?"\n\n"+item.notes:""),
-    ...(item.location ? {location:item.location} : {}),
-    ...(hasTime ? {
-      start:{ dateTime:`${item.dueDate}T${startT}:00+08:00`, timeZone:"Asia/Singapore" },
-      end:  { dateTime:`${item.dueDate}T${endT}:00+08:00`,   timeZone:"Asia/Singapore" }
-    } : {
-      start:{ date:item.dueDate }, end:{ date:item.dueDate }
-    }),
-    reminders:{ useDefault:false, overrides:[{ method:"popup", minutes:30 }] },
-    extendedProperties:{ private:{ taskmaster_id:String(item.id), taskmaster_priority:item.priority } }
-  };
+  // MEETINGS: timed events. TASKS: always all-day (no time block in calendar)
+  let body;
+  if(isApt && item.startTime && item.endTime) {
+    body = {
+      summary: item.title,
+      description: item.notes||"",
+      ...(item.location ? {location:item.location} : {}),
+      start:{ dateTime:`${item.dueDate}T${item.startTime}:00+08:00`, timeZone:"Asia/Singapore" },
+      end:  { dateTime:`${item.dueDate}T${item.endTime}:00+08:00`,   timeZone:"Asia/Singapore" },
+      reminders:{ useDefault:false, overrides:[{ method:"popup", minutes:30 }] },
+      extendedProperties:{ private:{ taskmaster_id:String(item.id), taskmaster_type:"meeting" } }
+    };
+  } else {
+    // Task → all-day event with priority and time in description
+    const timeNote = item.dueTime ? `Scheduled: ${item.dueTime} SGT` : "";
+    const estNote = item.estimatedMins ? `Est: ${item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}` : "";
+    const desc = [
+      `[Task] ${item.priority?.toUpperCase()||"MEDIUM"} priority`,
+      timeNote, estNote, item.notes||""
+    ].filter(Boolean).join(" | ");
+    body = {
+      summary: `☐ ${item.title}`,
+      description: desc,
+      start:{ date:item.dueDate },
+      end:  { date:item.dueDate },
+      colorId: item.priority==="high"?"11":item.priority==="medium"?"5":"2",
+      reminders:{ useDefault:false, overrides:[] },
+      extendedProperties:{ private:{ taskmaster_id:String(item.id), taskmaster_priority:item.priority, taskmaster_type:"task" } }
+    };
+  }
   return gcalFetch(token, "/calendars/primary/events", "POST", body);
 }
 
@@ -261,7 +275,7 @@ function saveSnoozed(s) { try { localStorage.setItem(SNOOZED_KEY,JSON.stringify(
 function App() {
   const [items, setItems]             = useState([]);
   const [reminders, setReminders]     = useState([]);
-  const [tab, setTab]                 = useState("week");
+  const [tab, setTab]                 = useState("tasks");
   const [weekBase, setWeekBase]       = useState(new Date());
   const [selDate, setSelDate]         = useState(new Date());
   const [modal, setModal]             = useState(null);
@@ -388,6 +402,21 @@ function App() {
         seenTaskIds.add(item.id);
       }
       const clean = persist(current, null); setItems(clean);
+      // Clean up tombstoned deletions — remove items that were deleted on another device
+      try {
+        const deletedIds = JSON.parse(localStorage.getItem('taskmaster_deleted')||'[]');
+        if(deletedIds.length>0) {
+          const delIdSet = new Set(deletedIds.map(d=>d.id));
+          const delGcalSet = new Set(deletedIds.map(d=>d.gcalId).filter(Boolean));
+          const beforeCount = current.length;
+          const cleaned = current.filter(i=> !delIdSet.has(i.id) && !(i.gcalId && delGcalSet.has(i.gcalId)));
+          if(cleaned.length < beforeCount) {
+            const removed = beforeCount - cleaned.length;
+            setItems(cleaned); persist(cleaned, null);
+            addSyncLog(`🗑 Cleaned ${removed} deleted item${removed!==1?'s':''} from other device`);
+          }
+        }
+      } catch(e) {}
       const msg = `✅ Pulled ${added} new event${added!==1?"s":""} from Google Calendar`;
       setSyncStatus(msg); addSyncLog(msg);
       localStorage.setItem('taskmaster_last_pull', new Date().toLocaleString('en-SG',{timeZone:'Asia/Singapore'}));
@@ -516,11 +545,26 @@ function App() {
     if(detailItem?.id===parentId) setDetailItem(u.find(i=>i.id===parentId));
   };
 
-  const deleteItem = id => {
+  const deleteItem = async (id) => {
     const item = items.find(i=>i.id===id);
-    const u=items.filter(i=>i.id!==id); setItems(u); persist(u,null);
+    if(!item) return;
+    // If connected to GCal and item has gcalId — delete from GCal first
+    if(gcalToken && item.gcalId) {
+      await deleteFromGcal(item.gcalId);
+    }
+    // If connected but no gcalId — item was never pushed, just delete locally
+    // Store deleted IDs in localStorage so other devices can clean up on Pull
+    try {
+      const deletedIds = JSON.parse(localStorage.getItem('taskmaster_deleted')||'[]');
+      deletedIds.push({ id, gcalId:item.gcalId||null, deletedAt:new Date().toISOString() });
+      // Keep only last 200 deleted IDs
+      const trimmed = deletedIds.slice(-200);
+      localStorage.setItem('taskmaster_deleted', JSON.stringify(trimmed));
+    } catch(e) {}
+    const u = items.filter(i=>i.id!==id);
+    setItems(u); persist(u, null);
     if(detailItem?.id===id) setDetailItem(null);
-    if(gcalToken && item?.gcalId) deleteFromGcal(item.gcalId);
+    addSyncLog('🗑 Deleted: '+item.title);
   };
   // Soft "cancel" for meetings — marks done without deleting
   const cancelItem = id => {
@@ -600,11 +644,11 @@ function App() {
     purple:"#7C3AED",purpleL:"#F5F3FF",
     teal:"#0D9488",tealL:"#F0FDFA",
     text:"#1E293B",textM:"#475569",textL:"#94A3B8",
-    bg:"#F1F5F9",card:"#FFFFFF",border:"#E2E8F0",
+    bg:"#FFFFFF",card:"#FFFFFF",border:"#E2E8F0",
   };
   const S={
-    wrap:{ fontFamily:"'DM Sans','Segoe UI',sans-serif", background:C.bg, minHeight:"100vh", maxWidth:430, margin:"0 auto", color:C.text },
-    hdr:{ background:"linear-gradient(140deg,#1E3A8A,#1D4ED8 60%,#0EA5E9)", padding:"18px 15px 0", color:"#fff" },
+    wrap:{ fontFamily:"'DM Sans','Segoe UI',sans-serif", background:"#FFFFFF", minHeight:"100vh", maxWidth:430, margin:"0 auto", color:C.text },
+    hdr:{ background:"linear-gradient(160deg,#111827 0%,#1E3A8A 60%,#1D4ED8)", padding:"18px 15px 0", color:"#fff" },
     greeting:{ fontSize:11, color:"#93C5FD", letterSpacing:2, textTransform:"uppercase", marginBottom:2 },
     appName:{ fontSize:23, fontWeight:900, color:"#fff" },
     subLine:{ fontSize:10, color:"#60A5FA", marginBottom:10 },
@@ -627,7 +671,7 @@ function App() {
     fBtn:(a,c,bg)=>({ padding:"5px 10px", borderRadius:20, cursor:"pointer", fontWeight:700, fontSize:11, border:`1.5px solid ${a?c:C.border}`, background:a?bg:"#F8FAFC", color:a?c:C.textL }),
     divider:{ width:1, background:C.border, margin:"0 2px", alignSelf:"stretch" },
     content:{ padding:"12px 13px 96px" },
-    card:{ background:C.card, borderRadius:14, padding:"13px", marginBottom:10, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" },
+    card:{ background:"#fff", borderRadius:14, padding:"13px", marginBottom:10, boxShadow:"0 1px 4px rgba(0,0,0,0.06)", border:"1px solid #F3F4F6" },
     secTitle:{ fontSize:10, fontWeight:800, letterSpacing:2.5, color:C.textL, textTransform:"uppercase", marginBottom:9 },
     pillRow:{ display:"flex", gap:7, flexWrap:"wrap", marginBottom:12 },
     pill:(c,bg)=>({ display:"inline-flex", alignItems:"center", gap:4, background:bg, border:`1.5px solid ${c}33`, borderRadius:20, padding:"5px 11px", fontSize:11, color:c, fontWeight:700 }),
@@ -691,7 +735,7 @@ function App() {
     aiInput:{ flex:1, background:"#F8FAFC", border:`1.5px solid ${C.border}`, borderRadius:9, padding:"8px 11px", color:C.text, fontSize:14, outline:"none", fontFamily:"inherit" },
     aiAddBtn:{ width:34, height:34, borderRadius:9, background:C.teal, border:"none", color:"#fff", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
     fab: c=>({ position:"fixed", bottom:82, right:15, width:52, height:52, borderRadius:"50%", background:`linear-gradient(135deg,${c},${c}DD)`, border:"none", color:"#fff", fontSize:22, cursor:"pointer", boxShadow:`0 6px 20px ${c}55`, display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }),
-    nav:{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:430, background:"#fff", borderTop:`1.5px solid ${C.border}`, display:"flex", zIndex:200, boxShadow:"0 -3px 12px rgba(0,0,0,0.07)" },
+    nav:{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:430, background:"#fff", borderTop:"1px solid #F3F4F6", display:"flex", zIndex:200, boxShadow:"0 -2px 16px rgba(0,0,0,0.08)" },
     navBtn: a=>({ flex:1, padding:"9px 2px 13px", background:"none", border:"none", color:a?C.blue:C.textL, fontSize:a?20:18, cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, position:"relative" }),
     navLbl: a=>({ fontSize:8, fontWeight:700, letterSpacing:1, textTransform:"uppercase", color:a?C.blue:C.textL }),
     navAlert:{ position:"absolute", top:6, right:8, width:8, height:8, borderRadius:"50%", background:"#EF4444", border:"2px solid #fff" },
@@ -1154,6 +1198,240 @@ function App() {
   };
 
   // ── ALL TAB ──
+  // ── TODOIST-STYLE TASKS TAB ──
+  const renderTasks = () => {
+    const now = new Date(); const todStr = todayKey(); const tomStr = toKey(addDays(now,1));
+    const allTasks = items.filter(i=>i.type==="task");
+    const overdue  = allTasks.filter(i=>!i.done&&i.dueDate<todStr).sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+    const todayT   = allTasks.filter(i=>!i.done&&i.dueDate===todStr).sort((a,b)=>(a.dueTime||"99:99").localeCompare(b.dueTime||"99:99"));
+    const upcoming = allTasks.filter(i=>!i.done&&i.dueDate>todStr).sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+    const noDue    = allTasks.filter(i=>!i.done&&!i.dueDate);
+    const done     = allTasks.filter(i=>i.done);
+
+    // Apply energy filter
+    const applyEF = list => energyFilter ? list.filter(i=>i.energyTag===energyFilter) : list;
+
+    const priDot = p => ({high:"#DC2626",medium:"#F97316",low:"#3B82F6",undefined:"#D1D5DB"}[p]||"#D1D5DB");
+
+    const TaskRow = ({item}) => {
+      const [subInput, setSubInput] = useState("");
+      const subtasks = item.subtasks||[];
+      const subDone = subtasks.filter(s=>s.done).length;
+      const subTotal = subtasks.length;
+      const subPct = subTotal>0?Math.round((subDone/subTotal)*100):0;
+      const isExpanded = expandedSubtasks.has(item.id);
+      const countdown = getCountdown(item);
+      const energyTag = ENERGY_TAGS.find(t=>t.value===item.energyTag);
+      return (
+        <div style={{borderBottom:"1px solid #F3F4F6",paddingBottom:2,marginBottom:2,opacity:item.done?0.45:1,transition:"opacity .3s"}}>
+          <div style={{display:"flex",alignItems:"flex-start",gap:10,padding:"9px 0 5px"}}>
+            {/* Priority dot / checkbox */}
+            <div onClick={()=>toggleDone(item.id)} style={{width:20,height:20,minWidth:20,borderRadius:"50%",border:`2px solid ${priDot(item.priority)}`,background:item.done?priDot(item.priority):"transparent",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",marginTop:1,flexShrink:0,transition:"all .15s"}}>
+              {item.done&&<span style={{fontSize:10,color:"#fff",fontWeight:900}}>✓</span>}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              {/* Title */}
+              <div style={{fontSize:15,fontWeight:500,color:item.done?"#9CA3AF":"#111827",textDecoration:item.done?"line-through":"none",lineHeight:1.35,cursor:"pointer",marginBottom:3}} onClick={()=>setDetailItem(item)}>{item.title}</div>
+              {/* Meta row */}
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                {item.dueDate&&<span style={{fontSize:11,color:item.dueDate<todStr&&!item.done?"#DC2626":item.dueDate===todStr?"#059669":"#6B7280",fontWeight:500}}>
+                  {item.dueDate===todStr?"Today":item.dueDate===tomStr?"Tomorrow":item.dueDate}
+                  {item.dueTime?` · ${fmt(item.dueTime)}`:""}
+                </span>}
+                {item.estimatedMins&&<span style={{fontSize:11,color:"#9CA3AF"}}>~{item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}</span>}
+                {energyTag&&<span style={{fontSize:10,fontWeight:600,color:energyTag.color,background:energyTag.bg,borderRadius:4,padding:"1px 6px"}}>{energyTag.label}</span>}
+                {item.fromGcal&&<span style={{fontSize:10,color:"#059669",background:"#F0FDF4",borderRadius:4,padding:"1px 6px",fontWeight:600}}>GCal</span>}
+                {subTotal>0&&<span style={{fontSize:11,color:"#6B7280"}}>◻ {subDone}/{subTotal}</span>}
+                {countdown&&<span style={{fontSize:10,fontWeight:700,color:countdown.color}}>{countdown.label}</span>}
+              </div>
+              {/* Subtask progress bar */}
+              {subTotal>0&&<div style={{marginTop:5,background:"#F3F4F6",borderRadius:3,height:3,overflow:"hidden"}}><div style={{height:"100%",width:`${subPct}%`,background:"#059669",borderRadius:3,transition:"width .4s"}}/></div>}
+              {/* Subtasks expanded */}
+              {isExpanded&&<div style={{marginTop:6,paddingLeft:4}}>
+                {subtasks.map(s=>(
+                  <div key={s.id} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",borderBottom:"1px solid #F9FAFB"}}>
+                    <div onClick={()=>toggleSubtask(item.id,s.id)} style={{width:16,height:16,minWidth:16,borderRadius:"50%",border:`2px solid ${priDot(item.priority)}`,background:s.done?priDot(item.priority):"transparent",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0}}>
+                      {s.done&&<span style={{fontSize:8,color:"#fff",fontWeight:900}}>✓</span>}
+                    </div>
+                    <span style={{fontSize:13,color:s.done?"#9CA3AF":"#374151",textDecoration:s.done?"line-through":"none",flex:1}}>{s.text}</span>
+                    <button onClick={()=>deleteSubtask(item.id,s.id)} style={{background:"none",border:"none",color:"#D1D5DB",fontSize:12,cursor:"pointer",padding:0}}>✕</button>
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:6,marginTop:5}}>
+                  <input style={{flex:1,background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:6,padding:"5px 8px",fontSize:12,outline:"none",fontFamily:"inherit"}}
+                    placeholder="Add sub-task…" value={subInput} onChange={e=>setSubInput(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter"){addSubtask(item.id,subInput);setSubInput("");}}}
+                  />
+                  <button onClick={()=>{addSubtask(item.id,subInput);setSubInput("");}} style={{background:"#059669",border:"none",borderRadius:6,padding:"5px 10px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:700}}>+</button>
+                </div>
+              </div>}
+              {/* Notes preview */}
+              {item.notes&&!isExpanded&&<div style={{fontSize:11,color:"#9CA3AF",marginTop:2,fontStyle:"italic",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.notes}</div>}
+            </div>
+            {/* Right actions */}
+            <div style={{display:"flex",flexDirection:"column",gap:3,flexShrink:0}}>
+              <button onClick={()=>setDetailItem(item)} style={{background:"none",border:"none",color:"#9CA3AF",fontSize:13,cursor:"pointer",padding:"2px 4px"}}>✏️</button>
+              {subTotal>0&&<button onClick={()=>setExpandedSubtasks(p=>{const n=new Set(p);n.has(item.id)?n.delete(item.id):n.add(item.id);return n;})} style={{background:"none",border:"none",color:"#9CA3AF",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>◻</button>}
+              <button onClick={()=>setDeleteConfirm(item)} style={{background:"none",border:"none",color:"#FCA5A5",fontSize:12,cursor:"pointer",padding:"2px 4px"}}>🗑</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const SectionHeader = ({label, count, color="#6B7280"}) => (
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"14px 0 6px",borderBottom:"2px solid #F3F4F6",marginBottom:2}}>
+        <span style={{fontSize:12,fontWeight:700,color,letterSpacing:0.5,textTransform:"uppercase"}}>{label}</span>
+        {count>0&&<span style={{fontSize:11,color:"#9CA3AF",background:"#F3F4F6",borderRadius:10,padding:"1px 7px",fontWeight:600}}>{count}</span>}
+      </div>
+    );
+
+    // Quick add inline — Todoist style
+    const [quickOpen, setQuickOpen] = useState(false);
+    const [qTitle, setQTitle] = useState("");
+    const [qDate, setQDate] = useState(todStr);
+    const [qPriority, setQPriority] = useState("medium");
+    const qRef = React.useRef(null);
+
+    const quickSubmit = () => {
+      if(!qTitle.trim()) return;
+      const item = { ...{type:"task",category:"work",priority:qPriority,dueDate:qDate,dueTime:"",startTime:"",endTime:"",location:"",notes:"",estimatedMins:60,recurrence:"none",actionItems:[],subtasks:[]},
+        id:`user_${Date.now()}`, title:qTitle.trim(), done:false, createdAt:new Date().toISOString() };
+      const updated=[...items,item]; const clean=persist(updated,null); setItems(clean);
+      if(gcalToken) setTimeout(()=>pushToGcal(item),100);
+      setQTitle(""); setQDate(todStr); setQPriority("medium"); setQuickOpen(false);
+    };
+
+    return (
+      <div style={{padding:"0 16px 96px",background:"#fff",minHeight:"100vh"}}>
+        {/* Energy filter bar */}
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",paddingTop:10,paddingBottom:8,borderBottom:"1px solid #F3F4F6",marginBottom:4}}>
+          <button style={{padding:"5px 11px",borderRadius:14,border:`1.5px solid ${!energyFilter?"#111827":"#E5E7EB"}`,background:!energyFilter?"#111827":"#fff",color:!energyFilter?"#fff":"#6B7280",fontSize:11,fontWeight:600,cursor:"pointer"}} onClick={()=>setEnergyFilter(null)}>All</button>
+          {ENERGY_TAGS.map(tag=>(
+            <button key={tag.value} style={{padding:"5px 11px",borderRadius:14,border:`1.5px solid ${energyFilter===tag.value?tag.color:"#E5E7EB"}`,background:energyFilter===tag.value?tag.bg:"#fff",color:energyFilter===tag.value?tag.color:"#6B7280",fontSize:11,fontWeight:600,cursor:"pointer"}} onClick={()=>setEnergyFilter(energyFilter===tag.value?null:tag.value)}>{tag.label}</button>
+          ))}
+        </div>
+
+        {/* Overdue */}
+        {applyEF(overdue).length>0&&<>
+          <SectionHeader label="⚠ Overdue" count={applyEF(overdue).length} color="#DC2626"/>
+          {applyEF(overdue).map(i=><TaskRow key={i.id} item={i}/>)}
+        </>}
+
+        {/* Today */}
+        <SectionHeader label={`Today · ${MONTHS[now.getMonth()]} ${now.getDate()}`} count={applyEF(todayT).length} color="#059669"/>
+        {applyEF(todayT).length===0&&<div style={{fontSize:13,color:"#9CA3AF",padding:"10px 0 6px",fontStyle:"italic"}}>No tasks today — enjoy! 🎉</div>}
+        {applyEF(todayT).map(i=><TaskRow key={i.id} item={i}/>)}
+
+        {/* Quick add row — Todoist style */}
+        {!quickOpen?<div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",cursor:"pointer",color:"#9CA3AF"}} onClick={()=>{setQuickOpen(true);setTimeout(()=>qRef.current?.focus(),50);}}>
+          <div style={{width:20,height:20,borderRadius:"50%",border:"2px dashed #D1D5DB",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><span style={{fontSize:14,lineHeight:1}}>+</span></div>
+          <span style={{fontSize:14}}>Add task…</span>
+        </div>:
+        <div style={{background:"#FAFAFA",border:"1.5px solid #E5E7EB",borderRadius:10,padding:"12px",marginTop:6,marginBottom:6}}>
+          <input ref={qRef} style={{width:"100%",background:"transparent",border:"none",fontSize:15,fontWeight:500,color:"#111827",outline:"none",fontFamily:"inherit",marginBottom:8}} placeholder="Task name…" value={qTitle} onChange={e=>setQTitle(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") quickSubmit(); if(e.key==="Escape") setQuickOpen(false); }} autoFocus/>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <input type="date" step="900" style={{fontSize:12,border:"1px solid #E5E7EB",borderRadius:6,padding:"4px 8px",color:"#374151",outline:"none"}} value={qDate} onChange={e=>setQDate(e.target.value)}/>
+            {["high","medium","low"].map(p=>(
+              <button key={p} style={{padding:"4px 9px",borderRadius:6,border:`1.5px solid ${qPriority===p?({high:"#DC2626",medium:"#F97316",low:"#3B82F6"}[p]):"#E5E7EB"}`,background:qPriority===p?({high:"#FEF2F2",medium:"#FFF7ED",low:"#EFF6FF"}[p]):"#fff",color:{high:"#DC2626",medium:"#F97316",low:"#3B82F6"}[p],fontSize:11,fontWeight:700,cursor:"pointer"}} onClick={()=>setQPriority(p)}>P{p==="high"?1:p==="medium"?2:3}</button>
+            ))}
+            <button onClick={quickSubmit} style={{padding:"5px 14px",borderRadius:7,background:"#111827",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",marginLeft:"auto"}}>Add</button>
+            <button onClick={()=>setQuickOpen(false)} style={{padding:"5px 10px",borderRadius:7,background:"transparent",border:"1px solid #E5E7EB",color:"#6B7280",fontSize:12,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>}
+
+        {/* Upcoming */}
+        {applyEF(upcoming).length>0&&<>
+          <SectionHeader label="Upcoming" count={applyEF(upcoming).length} color="#374151"/>
+          {applyEF(upcoming).map(i=><TaskRow key={i.id} item={i}/>)}
+        </>}
+
+        {/* No due date */}
+        {applyEF(noDue).length>0&&<>
+          <SectionHeader label="No Due Date" count={applyEF(noDue).length} color="#9CA3AF"/>
+          {applyEF(noDue).map(i=><TaskRow key={i.id} item={i}/>)}
+        </>}
+
+        {/* Completed accordion */}
+        {applyEF(done).length>0&&<div style={{marginTop:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",cursor:"pointer"}} onClick={()=>setShowCompleted(!showCompleted)}>
+            <span style={{fontSize:12,fontWeight:700,color:"#9CA3AF",letterSpacing:0.5,textTransform:"uppercase"}}>Completed ({applyEF(done).length})</span>
+            <span style={{color:"#9CA3AF",fontSize:12}}>{showCompleted?"▲":"▼"}</span>
+          </div>
+          {showCompleted&&applyEF(done).map(i=><TaskRow key={i.id} item={i}/>)}
+        </div>}
+      </div>
+    );
+  };
+
+  // ── MEETINGS TAB ──
+  const renderMeetings = () => {
+    const now = new Date(); const todStr = todayKey();
+    const upcoming = items.filter(i=>i.type==="appointment"&&!i.done&&i.dueDate>=todStr).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||(a.startTime||"").localeCompare(b.startTime||""));
+    const past = items.filter(i=>i.type==="appointment"&&(i.done||i.dueDate<todStr)).sort((a,b)=>b.dueDate.localeCompare(a.dueDate));
+
+    const MeetingRow = ({item}) => {
+      const countdown = getCountdown(item);
+      const actionsPending = (item.actionItems||[]).filter(a=>!a.done).length;
+      return (
+        <div style={{background:"#fff",border:"1px solid #E5E7EB",borderLeft:`4px solid ${countdown?.pulse?"#DC2626":"#3B82F6"}`,borderRadius:10,padding:"12px 12px 10px",marginBottom:8,opacity:item.done||item.cancelled?0.5:1}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
+            <div style={{flex:1,minWidth:0,paddingRight:8}}>
+              <div style={{fontSize:15,fontWeight:600,color:"#111827",lineHeight:1.3,marginBottom:4}}>{item.title}</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                <span style={{fontSize:12,color:"#3B82F6",fontWeight:500}}>📅 {item.dueDate===todStr?"Today":item.dueDate}</span>
+                {item.startTime&&<span style={{fontSize:12,color:"#374151",fontWeight:500}}>{fmt(item.startTime)} – {fmt(item.endTime)}</span>}
+                {item.startTime&&item.endTime&&<span style={{fontSize:11,color:"#9CA3AF"}}>{durLabel(item.startTime,item.endTime)}</span>}
+                {item.location&&<span style={{fontSize:11,color:"#6B7280"}}>📍 {item.location}</span>}
+                {item.fromGcal&&<span style={{fontSize:10,color:"#059669",background:"#F0FDF4",borderRadius:4,padding:"1px 6px",fontWeight:600}}>GCal</span>}
+                {actionsPending>0&&<span style={{fontSize:10,color:"#0D9488",background:"#F0FDFA",borderRadius:4,padding:"1px 6px",fontWeight:700}}>✅ {actionsPending} actions</span>}
+              </div>
+            </div>
+            {countdown&&<span style={{fontSize:11,fontWeight:700,color:countdown.color,background:countdown.pulse?"#FEF2F2":"#FFF7ED",borderRadius:7,padding:"3px 8px",flexShrink:0,border:`1px solid ${countdown.color}33`}}>{countdown.label}</span>}
+          </div>
+          {/* Action items preview */}
+          {(item.actionItems||[]).filter(a=>!a.done).slice(0,2).map(a=>(
+            <div key={a.id} style={{fontSize:11,color:"#0D9488",display:"flex",gap:5,alignItems:"center",marginTop:2}}>
+              <span>→</span><span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.text}</span>
+            </div>
+          ))}
+          <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+            <button onClick={()=>setDetailItem(item)} style={{fontSize:11,color:"#3B82F6",background:"#EFF6FF",border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>✏️ Edit / Actions</button>
+            {!item.done&&!item.cancelled&&<button onClick={()=>cancelItem(item.id)} style={{fontSize:11,color:"#6B7280",background:"#F3F4F6",border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>✕ Cancel</button>}
+            <button onClick={()=>setDeleteConfirm(item)} style={{fontSize:11,color:"#EF4444",background:"#FEF2F2",border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>🗑 Delete</button>
+          </div>
+        </div>
+      );
+    };
+
+    // Group upcoming by date
+    const byDate = {};
+    upcoming.forEach(m=>{ if(!byDate[m.dueDate]) byDate[m.dueDate]=[]; byDate[m.dueDate].push(m); });
+
+    return (
+      <div style={{padding:"10px 16px 96px",background:"#fff",minHeight:"100vh"}}>
+        {Object.keys(byDate).length===0&&<div style={{textAlign:"center",padding:"40px 16px",color:"#9CA3AF"}}><div style={{fontSize:40,marginBottom:8}}>📅</div><div style={{fontSize:15,fontWeight:600}}>No upcoming meetings</div><div style={{fontSize:12,marginTop:4}}>Pull from GCal to import your calendar</div></div>}
+        {Object.keys(byDate).sort().map(dk=>{
+          const d=new Date(dk); const isToday=dk===todStr;
+          return (
+            <div key={dk} style={{marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:700,color:isToday?"#059669":"#374151",marginBottom:8,paddingBottom:6,borderBottom:"2px solid "+(isToday?"#D1FAE5":"#F3F4F6")}}>
+                {isToday?"📍 Today — ":""}{DAYS_FULL[d.getDay()]}, {MONTHS[d.getMonth()]} {d.getDate()}
+              </div>
+              {byDate[dk].map(m=><MeetingRow key={m.id} item={m}/>)}
+            </div>
+          );
+        })}
+        {past.length>0&&<div style={{marginTop:12}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#9CA3AF",letterSpacing:0.5,textTransform:"uppercase",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",gap:8}} onClick={()=>setShowCompleted(!showCompleted)}>
+            Past Meetings ({past.length}) <span>{showCompleted?"▲":"▼"}</span>
+          </div>
+          {showCompleted&&past.slice(0,10).map(m=><MeetingRow key={m.id} item={m}/>)}
+        </div>}
+      </div>
+    );
+  };
+
   // Action Items Overview — all pending action items from all meetings
   const renderActionItemsOverview = () => {
     const allActions = [];
@@ -1263,13 +1541,13 @@ function App() {
         </div>
         <div style={S.subLine}>{USER_EMAIL} · SGT</div>
         <div style={S.statsRow}>
-          <div style={S.stat}><div style={S.statN()}>{todayPending}</div><div style={S.statL}>Today</div></div>
-          <div style={S.stat}><div style={S.statN()}>{weekPending.length}</div><div style={S.statL}>This Wk</div></div>
-          <div style={S.stat}><div style={S.statN()}>{weekMeetings.length}</div><div style={S.statL}>Meetings</div></div>
+          <div style={S.stat}><div style={S.statN()}>{items.filter(i=>i.type==="task"&&!i.done&&i.dueDate===todayKey()).length}</div><div style={S.statL}>Today</div></div>
+          <div style={S.stat}><div style={S.statN()}>{items.filter(i=>i.type==="task"&&!i.done&&i.dueDate<todayKey()).length}</div><div style={S.statL}>Overdue</div></div>
+          <div style={S.stat}><div style={S.statN()}>{items.filter(i=>i.type==="appointment"&&!i.done&&i.dueDate>=todayKey()).length}</div><div style={S.statL}>Meetings</div></div>
           <div style={S.stat}><div style={S.statN(totalAlerts>0?"#FCA5A5":undefined)}>{totalAlerts}</div><div style={S.statL}>Alerts</div></div>
         </div>
         <div style={S.tabBar}>
-          {[["alarms","⏰ Alarms"],["week","📅 Week"],["all","📋 All"],["reminders","🔔 Alerts"],["sync","🔗 Sync"]].map(([k,l])=>(
+          {[["tasks","✅ Tasks"],["meetings","📅 Meetings"],["alarms","⏰ Alarms"],["reminders","🔔 Alerts"],["sync","🔗 Sync"]].map(([k,l])=>(
             <button key={k} style={S.tabBtn(tab===k)} onClick={()=>setTab(k)}>{l}{k==="alarms"&&totalAlerts>0&&<span style={S.alarmDot}/>}</button>
           ))}
         </div>
@@ -1303,8 +1581,9 @@ function App() {
 
       <div style={S.content}>
         {focusMode ? renderFocusMode() : (<>
+        {tab==="tasks"     && renderTasks()}
+        {tab==="meetings"  && renderMeetings()}
         {tab==="alarms"    && renderAlarms()}
-        {tab==="week"      && renderWeek()}
         {tab==="all"       && renderAll()}
         </>)}
         {tab==="sync" && (() => {
@@ -1321,6 +1600,19 @@ function App() {
                 <div style={{display:"flex",gap:8,marginBottom:10}}>
                   <button style={{flex:1,padding:"11px 0",background:`linear-gradient(135deg,${C2.blue},#0EA5E9)`,border:"none",borderRadius:11,color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer"}} onClick={pullFromGcal} disabled={syncing}>{syncing?"⏳ Syncing…":"⬇️ Pull from GCal"}</button>
                 </div>
+                <button style={{width:"100%",padding:"10px",background:"transparent",border:`1.5px solid ${C2.border}`,borderRadius:11,color:C2.textL,fontSize:13,fontWeight:700,cursor:"pointer",marginBottom:6}} onClick={async ()=>{
+                  // Push all unsynced items
+                  const unsynced = items.filter(i=>!i.gcalId&&!i.fromGcal&&!i.done);
+                  if(unsynced.length===0){setSyncStatus("✅ All items already synced!");return;}
+                  setSyncing(true); setSyncStatus(`⏳ Pushing ${unsynced.length} unsynced items…`);
+                  let pushed=0;
+                  for(const item of unsynced){
+                    try{ await pushToGcal(item); pushed++; } catch(e){}
+                  }
+                  setSyncing(false);
+                  const msg=`✅ Pushed ${pushed} item${pushed!==1?"s":""} to Google Calendar`;
+                  setSyncStatus(msg); addSyncLog(msg);
+                }}>⬆️ Push Unsynced ({items.filter(i=>!i.gcalId&&!i.fromGcal&&!i.done).length})</button>
                 <button style={{width:"100%",padding:"10px",background:"transparent",border:`1.5px solid ${C2.border}`,borderRadius:11,color:C2.textL,fontSize:13,fontWeight:700,cursor:"pointer"}} onClick={signOutGcal}>Disconnect</button>
                 {localStorage.getItem('taskmaster_last_pull')&&<div style={{fontSize:10,color:C2.textL,textAlign:"center",marginTop:6}}>Last pulled: {localStorage.getItem('taskmaster_last_pull')}</div>}
                 {syncStatus&&<div style={{marginTop:10,background:syncStatus.startsWith("✅")?C2.greenL:syncStatus.startsWith("❌")?"#FEF2F2":C2.blueL,border:`1.5px solid ${syncStatus.startsWith("✅")?"#A7F3D0":syncStatus.startsWith("❌")?"#FECACA":"#BFDBFE"}`,borderRadius:10,padding:"9px 12px",fontSize:12,color:syncStatus.startsWith("✅")?C2.green:syncStatus.startsWith("❌")?C2.red:C2.blue}}>{syncStatus}</div>}
@@ -1396,10 +1688,10 @@ function App() {
         )}
       </div>
 
-      {tab!=="alarms"&&<button style={S.fab(tab==="reminders"?C.amber:C.blue)} onClick={()=>{ if(tab==="reminders"){setRform(blankR);setModal("reminder");}else{setForm(blank);setModal("task");} }}>+</button>}
+      {(tab==="tasks"||tab==="meetings"||tab==="reminders")&&<button style={S.fab(tab==="reminders"?C.amber:tab==="meetings"?"#3B82F6":"#111827")} onClick={()=>{ if(tab==="reminders"){setRform(blankR);setModal("reminder");}else if(tab==="meetings"){setForm({...blank,type:"appointment"});setModal("task");}else{setForm(blank);setModal("task");} }}>+</button>}
 
       <div style={S.nav}>
-        {[["alarms","⏰","Alarms"],["week","📅","Week"],["all","📋","All"],["reminders","🔔","Alerts"],["sync","🔗","Sync"]].map(([k,icon,l])=>(
+        {[["tasks","✅","Tasks"],["meetings","📅","Meetings"],["alarms","⏰","Alarms"],["reminders","🔔","Alerts"],["sync","🔗","Sync"]].map(([k,icon,l])=>(
           <button key={k} style={S.navBtn(tab===k)} onClick={()=>setTab(k)}>
             <span>{icon}</span><span style={S.navLbl(tab===k)}>{l}</span>
             {k==="alarms"&&totalAlerts>0&&<span style={S.navAlert}/>}
