@@ -792,17 +792,36 @@ function App() {
             {!isApt&&<><div style={S.lbl}>Priority</div><div style={{display:"flex",gap:6,marginBottom:10}}>{["high","medium","low"].map(p=><button key={p} style={S.priBtn(editPriority===p,p)} onClick={()=>setEditPriority(p)}>{PRIORITY[p].label}</button>)}</div></>}
             <div style={S.lbl}>Date</div>
             <input type="date" style={ef} value={editDate} onChange={e=>setEditDate(e.target.value)}/>
-            {!isApt&&<><div style={S.lbl}>Due Time <span style={{color:C.textL,fontWeight:400}}>(optional)</span></div><input type="time" style={ef} value={editDueTime} onChange={e=>setEditDueTime(e.target.value)}/></>}
+            {!isApt&&<><div style={S.lbl}>Due Time <span style={{color:C.textL,fontWeight:400}}>(optional)</span></div><input type="time" step="900" style={ef} value={editDueTime} onChange={e=>setEditDueTime(e.target.value)}/></>}
             {isApt&&<>
               <div style={{display:"flex",gap:8,marginBottom:8}}>
-                <div style={{flex:1}}><div style={S.lbl}>Start</div><input type="time" style={{...ef,marginBottom:0}} value={editStartTime} onChange={e=>setEditStartTime(e.target.value)}/></div>
-                <div style={{flex:1}}><div style={S.lbl}>End</div><input type="time" style={{...ef,marginBottom:0}} value={editEndTime} onChange={e=>setEditEndTime(e.target.value)}/></div>
+                <div style={{flex:1}}><div style={S.lbl}>Start</div><input type="time" step="900" style={{...ef,marginBottom:0}} value={editStartTime} onChange={e=>setEditStartTime(e.target.value)}/></div>
+                <div style={{flex:1}}><div style={S.lbl}>End</div><input type="time" step="900" style={{...ef,marginBottom:0}} value={editEndTime} onChange={e=>setEditEndTime(e.target.value)}/></div>
               </div>
               {editStartTime&&editEndTime&&toMins(editEndTime)>toMins(editStartTime)&&<div style={{fontSize:11,color:C.blue,marginBottom:8}}>⏱ {durLabel(editStartTime,editEndTime)}</div>}
               <div style={S.lbl}>Location</div>
               <input style={ef} placeholder="Location…" value={editLocation} onChange={e=>setEditLocation(e.target.value)}/>
             </>}
-            {!isApt&&<><div style={S.lbl}>Estimated Time</div><div style={{display:"flex",gap:6,marginBottom:10}}>{[30,60,90,120].map(m=><button key={m} style={{flex:1,padding:"8px 0",borderRadius:9,border:`1.5px solid ${editEstMins===m?C.blue:C.border}`,background:editEstMins===m?C.blueL:"#F8FAFC",color:editEstMins===m?C.blue:C.textL,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>setEditEstMins(m)}>{m<60?m+"m":m/60+"h"}</button>)}</div></>}
+            {!isApt&&<><div style={S.lbl}>Estimated Time</div><div style={{display:"flex",gap:6,marginBottom:6}}>{[30,60,90,120].map(m=><button key={m} style={{flex:1,padding:"8px 0",borderRadius:9,border:`1.5px solid ${editEstMins===m?C.blue:C.border}`,background:editEstMins===m?C.blueL:"#F8FAFC",color:editEstMins===m?C.blue:C.textL,fontWeight:700,fontSize:11,cursor:"pointer"}} onClick={()=>setEditEstMins(m)}>{m<60?m+"m":m/60+"h"}</button>)}</div>
+            <button style={{width:"100%",padding:"9px",background:"linear-gradient(135deg,#059669,#0D9488)",border:"none",borderRadius:10,color:"#fff",fontWeight:800,fontSize:12,cursor:"pointer",marginBottom:10}} onClick={()=>{
+              const WSTART=9*60+30,WEND=18*60,LSTART=12*60+30,LEND=14*60;
+              const dur=editEstMins||60;
+              const appts=items.filter(i=>i.id!==item.id&&(i.type==="appointment"||i.dueTime));
+              let found=false;
+              const startFrom=editDate?new Date(editDate):new Date();
+              for(let day=0;day<14&&!found;day++){
+                const tryDate=addDays(startFrom,day);
+                const dow=tryDate.getDay();
+                if(dow===0||dow===6) continue;
+                const dk=toKey(tryDate);
+                const busy=appts.filter(i=>i.dueDate===dk).map(i=>({s:toMins(i.startTime||i.dueTime||"00:00"),e:toMins(i.endTime||i.dueTime||"01:00")})).concat([{s:LSTART,e:LEND}]).sort((a,b)=>a.s-b.s);
+                let cur=WSTART;
+                for(const b of busy){ if(cur+dur<=b.s){setEditDate(dk);setEditDueTime(toHHMM(cur));found=true;break;} cur=Math.max(cur,b.e); }
+                if(!found&&cur+dur<=WEND){setEditDate(dk);setEditDueTime(toHHMM(cur));found=true;}
+              }
+              if(!found) alert("No free slot in next 14 days!");
+            }}>✨ Auto Schedule — Next Free Slot</button>
+          </>}
             <div style={S.lbl}>Repeat</div>
             <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>{RECURRENCE_OPTS.map(r=><button key={r.value} style={S.recBtn(editRecurrence===r.value)} onClick={()=>setEditRecurrence(r.value)}>{r.label}</button>)}</div>
             <div style={S.lbl}>Notes</div>
@@ -1161,10 +1180,29 @@ function App() {
           {!isApt&&<><div style={S.lbl}>Priority</div><div style={S.priRow}>{["high","medium","low"].map(p=><button key={p} style={S.priBtn(form.priority===p,p)} onClick={()=>setForm({...form,priority:p})}>{PRIORITY[p].label}</button>)}</div></>}
           <div style={S.row2}>
             <div style={{flex:1}}><div style={S.lbl}>Date</div><input type="date" style={{...S.inp,marginBottom:0}} value={form.dueDate} onChange={e=>setForm({...form,dueDate:e.target.value})}/></div>
-            {!isApt&&<div style={{flex:1}}><div style={S.lbl}>Time (opt.)</div><input type="time" style={{...S.inp,marginBottom:0}} value={form.dueTime} onChange={e=>setForm({...form,dueTime:e.target.value})}/></div>}
+            {!isApt&&<div style={{flex:1}}><div style={S.lbl}>Time (opt.)</div><input type="time" step="900" style={{...S.inp,marginBottom:0}} value={form.dueTime} onChange={e=>setForm({...form,dueTime:e.target.value})}/></div>}
           </div>
-          {isApt&&<><div style={{height:7}}/><div style={S.row2}><div style={{flex:1}}><div style={S.lbl}>Start</div><input type="time" style={{...S.inp,marginBottom:0}} value={form.startTime} onChange={e=>setForm({...form,startTime:e.target.value})}/></div><div style={{flex:1}}><div style={S.lbl}>End</div><input type="time" style={{...S.inp,marginBottom:0}} value={form.endTime} onChange={e=>setForm({...form,endTime:e.target.value})}/></div></div>{form.startTime&&form.endTime&&toMins(form.endTime)>toMins(form.startTime)&&<div style={{fontSize:11,color:C.blue,marginBottom:6}}>⏱ {durLabel(form.startTime,form.endTime)}</div>}<input style={S.inp} placeholder="Location (optional)..." value={form.location} onChange={e=>setForm({...form,location:e.target.value})}/></>}
-          {!isApt&&<><div style={S.lbl}>Est. Time</div><div style={S.estRow}>{[30,60,90,120].map(m=><button key={m} style={S.estBtn(form.estimatedMins===m)} onClick={()=>setForm({...form,estimatedMins:m})}>{m<60?m+"m":m/60+"h"}</button>)}</div></>}
+          {isApt&&<><div style={{height:7}}/><div style={S.row2}><div style={{flex:1}}><div style={S.lbl}>Start</div><input type="time" step="900" style={{...S.inp,marginBottom:0}} value={form.startTime} onChange={e=>setForm({...form,startTime:e.target.value})}/></div><div style={{flex:1}}><div style={S.lbl}>End</div><input type="time" step="900" style={{...S.inp,marginBottom:0}} value={form.endTime} onChange={e=>setForm({...form,endTime:e.target.value})}/></div></div>{form.startTime&&form.endTime&&toMins(form.endTime)>toMins(form.startTime)&&<div style={{fontSize:11,color:C.blue,marginBottom:6}}>⏱ {durLabel(form.startTime,form.endTime)}</div>}<input style={S.inp} placeholder="Location (optional)..." value={form.location} onChange={e=>setForm({...form,location:e.target.value})}/></>}
+          {!isApt&&<><div style={S.lbl}>Est. Time</div><div style={S.estRow}>{[30,60,90,120].map(m=><button key={m} style={S.estBtn(form.estimatedMins===m)} onClick={()=>setForm({...form,estimatedMins:m})}>{m<60?m+"m":m/60+"h"}</button>)}</div>
+          <button style={{width:"100%",padding:"10px",background:"linear-gradient(135deg,#059669,#0D9488)",border:"none",borderRadius:11,color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",marginBottom:9}} onClick={()=>{
+            const WSTART=9*60+30,WEND=18*60,LSTART=12*60+30,LEND=14*60;
+            const dur=form.estimatedMins||60;
+            const appts=items.filter(i=>i.type==="appointment"||i.dueTime);
+            let found=false;
+            const startFrom=form.dueDate?new Date(form.dueDate):new Date();
+            for(let day=0;day<14&&!found;day++){
+              const tryDate=addDays(startFrom,day);
+              const dow=tryDate.getDay();
+              if(dow===0||dow===6) continue;
+              const dk=toKey(tryDate);
+              const busy=appts.filter(i=>i.dueDate===dk).map(i=>({s:toMins(i.startTime||i.dueTime||"00:00"),e:toMins(i.endTime||i.dueTime||"01:00")})).concat([{s:LSTART,e:LEND}]).sort((a,b)=>a.s-b.s);
+              let cur=WSTART;
+              for(const b of busy){ if(cur+dur<=b.s){setForm({...form,dueDate:dk,dueTime:toHHMM(cur)});found=true;break;} cur=Math.max(cur,b.e); }
+              if(!found&&cur+dur<=WEND){setForm({...form,dueDate:dk,dueTime:toHHMM(cur)});found=true;}
+            }
+            if(!found) alert("No free slot in next 14 days!");
+          }}>✨ Auto Schedule — Next Free Slot</button>
+          div></>}
           <div style={S.lbl}>Repeat</div><div style={S.recRow}>{RECURRENCE_OPTS.map(r=><button key={r.value} style={S.recBtn(form.recurrence===r.value)} onClick={()=>setForm({...form,recurrence:r.value})}>{r.label}</button>)}</div>
           <div style={S.lbl}>Notes (optional)</div>
           <textarea style={S.textarea} placeholder="Notes, specs, contact info…" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
@@ -1178,7 +1216,7 @@ function App() {
         <div style={S.overlay} onClick={()=>setModal(null)}><div style={S.sheet} onClick={e=>e.stopPropagation()}>
           <div style={S.mTitle}>🔔 New Reminder</div>
           <input style={S.inp} placeholder="Reminder title..." value={rform.title} onChange={e=>setRform({...rform,title:e.target.value})}/>
-          <div style={S.row2}><div style={{flex:1}}><div style={S.lbl}>Date</div><input type="date" style={{...S.inp,marginBottom:0}} value={rform.date} onChange={e=>setRform({...rform,date:e.target.value})}/></div><div style={{flex:1}}><div style={S.lbl}>Time</div><input type="time" style={{...S.inp,marginBottom:0}} value={rform.time} onChange={e=>setRform({...rform,time:e.target.value})}/></div></div>
+          <div style={S.row2}><div style={{flex:1}}><div style={S.lbl}>Date</div><input type="date" style={{...S.inp,marginBottom:0}} value={rform.date} onChange={e=>setRform({...rform,date:e.target.value})}/></div><div style={{flex:1}}><div style={S.lbl}>Time</div><input type="time" step="900" style={{...S.inp,marginBottom:0}} value={rform.time} onChange={e=>setRform({...rform,time:e.target.value})}/></div></div>
           <div style={{height:7}}/><input style={S.inp} placeholder="Notes..." value={rform.notes} onChange={e=>setRform({...rform,notes:e.target.value})}/>
           <button style={S.aBtn(C.amber)} onClick={addReminder}>🔔 Set Reminder</button>
           <button style={S.cancelBtn} onClick={()=>setModal(null)}>Cancel</button>
