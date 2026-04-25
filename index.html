@@ -390,6 +390,7 @@ function App() {
       const clean = persist(current, null); setItems(clean);
       const msg = `✅ Pulled ${added} new event${added!==1?"s":""} from Google Calendar`;
       setSyncStatus(msg); addSyncLog(msg);
+      localStorage.setItem('taskmaster_last_pull', new Date().toLocaleString('en-SG',{timeZone:'Asia/Singapore'}));
     } catch(e) { const msg="❌ Pull failed: "+e.message; setSyncStatus(msg); addSyncLog(msg,false); }
     setSyncing(false);
   };
@@ -964,7 +965,6 @@ function App() {
             <button style={{width:"100%",padding:"9px",background:"linear-gradient(135deg,#059669,#0D9488)",border:"none",borderRadius:10,color:"#fff",fontWeight:800,fontSize:12,cursor:"pointer",marginBottom:10}} onClick={()=>{
               const WSTART=9*60+30,WEND=18*60,LSTART=12*60+30,LEND=14*60;
               const dur=editEstMins||60;
-              const appts=items.filter(i=>i.id!==item.id&&(i.type==="appointment"||i.dueTime));
               let found=false;
               const startFrom=editDate?new Date(editDate):new Date();
               for(let day=0;day<14&&!found;day++){
@@ -972,10 +972,18 @@ function App() {
                 const dow=tryDate.getDay();
                 if(dow===0||dow===6) continue;
                 const dk=toKey(tryDate);
-                const busy=appts.filter(i=>i.dueDate===dk).map(i=>({s:toMins(i.startTime||i.dueTime||"00:00"),e:toMins(i.endTime||i.dueTime||"01:00")})).concat([{s:LSTART,e:LEND}]).sort((a,b)=>a.s-b.s);
-                let cur=WSTART;
-                for(const b of busy){ if(cur+dur<=b.s){setEditDate(dk);setEditDueTime(toHHMM(cur));found=true;break;} cur=Math.max(cur,b.e); }
-                if(!found&&cur+dur<=WEND){setEditDate(dk);setEditDueTime(toHHMM(cur));found=true;}
+                const busy=items.filter(i=>i.id!==item.id&&i.dueDate===dk&&!i.done).map(i=>{
+                  const s=toMins(i.startTime||i.dueTime||"00:00");
+                  const e=i.endTime?toMins(i.endTime):s+(i.estimatedMins||60);
+                  return {s,e};
+                }).concat([{s:LSTART,e:LEND}]).filter(b=>b.e>0).sort((a,b)=>a.s-b.s);
+                let cur=WSTART; let scheduled=false;
+                for(const b of busy){
+                  if(b.s<=cur){ cur=Math.max(cur,b.e); continue; }
+                  if(cur+dur<=b.s){ setEditDate(dk);setEditDueTime(toHHMM(cur));found=true;scheduled=true;break; }
+                  cur=Math.max(cur,b.e);
+                }
+                if(!scheduled&&cur+dur<=WEND){ setEditDate(dk);setEditDueTime(toHHMM(cur));found=true; }
               }
               if(!found) alert("No free slot in next 14 days!");
             }}>✨ Auto Schedule — Next Free Slot</button>
@@ -1314,6 +1322,7 @@ function App() {
                   <button style={{flex:1,padding:"11px 0",background:`linear-gradient(135deg,${C2.blue},#0EA5E9)`,border:"none",borderRadius:11,color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer"}} onClick={pullFromGcal} disabled={syncing}>{syncing?"⏳ Syncing…":"⬇️ Pull from GCal"}</button>
                 </div>
                 <button style={{width:"100%",padding:"10px",background:"transparent",border:`1.5px solid ${C2.border}`,borderRadius:11,color:C2.textL,fontSize:13,fontWeight:700,cursor:"pointer"}} onClick={signOutGcal}>Disconnect</button>
+                {localStorage.getItem('taskmaster_last_pull')&&<div style={{fontSize:10,color:C2.textL,textAlign:"center",marginTop:6}}>Last pulled: {localStorage.getItem('taskmaster_last_pull')}</div>}
                 {syncStatus&&<div style={{marginTop:10,background:syncStatus.startsWith("✅")?C2.greenL:syncStatus.startsWith("❌")?"#FEF2F2":C2.blueL,border:`1.5px solid ${syncStatus.startsWith("✅")?"#A7F3D0":syncStatus.startsWith("❌")?"#FECACA":"#BFDBFE"}`,borderRadius:10,padding:"9px 12px",fontSize:12,color:syncStatus.startsWith("✅")?C2.green:syncStatus.startsWith("❌")?C2.red:C2.blue}}>{syncStatus}</div>}
               </>) : (<>
                 <div style={{fontSize:12,color:C2.textM,lineHeight:1.8,marginBottom:14}}>Connect your Google Calendar to sync tasks and meetings across all your devices — phone, computer, tablet.</div>
@@ -1354,6 +1363,14 @@ function App() {
                 Synced to GCal: <strong style={{color:C2.green}}>{items.filter(i=>i.synced||i.fromGcal).length}</strong><br/>
                 App-only (not yet synced): <strong style={{color:C2.amber}}>{items.filter(i=>!i.synced&&!i.fromGcal).length}</strong><br/>
                 Reminders: <strong>{reminders.length}</strong>
+              </div>
+              <div style={{marginTop:10,background:"#FFFBEB",border:"1.5px solid #FDE68A",borderRadius:10,padding:"10px 12px",fontSize:11,color:"#92400E",lineHeight:1.8}}>
+                <strong>📱 Safari vs Home Screen app?</strong><br/>
+                iOS keeps them in <strong>separate storage</strong> — they don't share tasks automatically.<br/>
+                <strong>How to sync between them:</strong><br/>
+                1. Add tasks on either device/browser<br/>
+                2. Open Sync tab → tap <strong>⬇️ Pull from GCal</strong><br/>
+                GCal is the shared bridge between all your devices ✅
               </div>
             </div>
 
@@ -1406,7 +1423,6 @@ function App() {
           <button style={{width:"100%",padding:"10px",background:"linear-gradient(135deg,#059669,#0D9488)",border:"none",borderRadius:11,color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",marginBottom:9}} onClick={()=>{
             const WSTART=9*60+30,WEND=18*60,LSTART=12*60+30,LEND=14*60;
             const dur=form.estimatedMins||60;
-            const appts=items.filter(i=>i.type==="appointment"||i.dueTime);
             let found=false;
             const startFrom=form.dueDate?new Date(form.dueDate):new Date();
             for(let day=0;day<14&&!found;day++){
@@ -1414,10 +1430,20 @@ function App() {
               const dow=tryDate.getDay();
               if(dow===0||dow===6) continue;
               const dk=toKey(tryDate);
-              const busy=appts.filter(i=>i.dueDate===dk).map(i=>({s:toMins(i.startTime||i.dueTime||"00:00"),e:toMins(i.endTime||i.dueTime||"01:00")})).concat([{s:LSTART,e:LEND}]).sort((a,b)=>a.s-b.s);
+              // Build busy slots from ALL scheduled items on this day
+              const busy=items.filter(i=>i.dueDate===dk&&!i.done).map(i=>{
+                const s=toMins(i.startTime||i.dueTime||"00:00");
+                const e=i.endTime?toMins(i.endTime):s+(i.estimatedMins||60);
+                return {s,e};
+              }).concat([{s:LSTART,e:LEND}]).filter(b=>b.s>0||b.e>0).sort((a,b)=>a.s-b.s);
               let cur=WSTART;
-              for(const b of busy){ if(cur+dur<=b.s){setForm({...form,dueDate:dk,dueTime:toHHMM(cur)});found=true;break;} cur=Math.max(cur,b.e); }
-              if(!found&&cur+dur<=WEND){setForm({...form,dueDate:dk,dueTime:toHHMM(cur)});found=true;}
+              let scheduled=false;
+              for(const b of busy){
+                if(b.s<=cur){ cur=Math.max(cur,b.e); continue; }
+                if(cur+dur<=b.s){ setForm({...form,dueDate:dk,dueTime:toHHMM(cur)}); found=true; scheduled=true; break; }
+                cur=Math.max(cur,b.e);
+              }
+              if(!scheduled&&cur+dur<=WEND){ setForm({...form,dueDate:dk,dueTime:toHHMM(cur)}); found=true; }
             }
             if(!found) alert("No free slot in next 14 days!");
           }}>✨ Auto Schedule — Next Free Slot</button>
