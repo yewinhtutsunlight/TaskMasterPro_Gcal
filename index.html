@@ -9,6 +9,9 @@
 <title>TaskMaster Pro</title>
 <style>
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.3)} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .task-card { animation: fadeIn 0.2s ease; }
   body{margin:0;padding:0;background:#F1F5F9;font-family:'DM Sans','Segoe UI',sans-serif;}
   input,textarea,button,select{font-family:inherit;}
   /* prevent iOS zoom on input focus */
@@ -147,6 +150,13 @@ const RECURRENCE_OPTS = [
   { value:"weekly", label:"Weekly" }, { value:"mon-fri", label:"Mon–Fri" },
   { value:"monthly", label:"Monthly" },
 ];
+const ENERGY_TAGS = [
+  { value:"deep_work",   label:"🧠 Deep Work",    color:"#7C3AED", bg:"#F5F3FF" },
+  { value:"quick_admin", label:"⚡ Quick Admin",   color:"#D97706", bg:"#FFFBEB" },
+  { value:"planning",    label:"📋 Planning",      color:"#1D4ED8", bg:"#EFF6FF" },
+  { value:"client",      label:"🤝 Client",        color:"#059669", bg:"#F0FDF4" },
+  { value:"site_visit",  label:"🏗 Site Visit",    color:"#DC2626", bg:"#FEF2F2" },
+];
 const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const DAYS_FULL  = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const MONTHS     = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -264,7 +274,11 @@ function App() {
   const [filterCat, setFilterCat]     = useState("all");
   const [weekGroup, setWeekGroup]     = useState("type");
   const [allGroup, setAllGroup]       = useState("type");
-  const [calView, setCalView]         = useState("day"); // "day" | "3day" | "week" 
+  const [calView, setCalView]         = useState("day"); // "day" | "3day" | "week"
+  const [focusMode, setFocusMode]     = useState(false);
+  const [energyFilter, setEnergyFilter] = useState(null); // active energy tag filter
+  const [showCompleted, setShowCompleted] = useState(false); // accordion for completed tasks
+  const [expandedSubtasks, setExpandedSubtasks] = useState(new Set()); // which tasks show subtasks
   const [alarmingItems, setAlarmingItems] = useState([]);
   const [overdueAlarms, setOverdueAlarms] = useState([]);
   const [snoozedIds, setSnoozedIds]   = useState(new Set());
@@ -275,6 +289,7 @@ function App() {
   const quickRef = useRef(null);
   const [quickText, setQuickText]     = useState("");
   const [quickPriority, setQuickPriority] = useState("high");
+
 
   // ── GOOGLE CALENDAR OAUTH & SYNC STATE ──
   const [gcalToken, setGcalToken]   = useState(null);
@@ -482,6 +497,24 @@ function App() {
     setReminders(r); persist(null,r); setModal(null); setRform(blankR);
   };
   const toggleDone = id => { const u=items.map(i=>i.id===id?{...i,done:!i.done}:i); setItems(u); persist(u,null); };
+  // ── SUBTASK MANAGEMENT ──
+  const addSubtask = (parentId, text) => {
+    if(!text.trim()) return;
+    const sub = { id:`sub_${Date.now()}`, text:text.trim(), done:false };
+    const u = items.map(i=>i.id===parentId?{...i,subtasks:[...(i.subtasks||[]),sub]}:i);
+    setItems(u); persist(u,null);
+  };
+  const toggleSubtask = (parentId, subId) => {
+    const u = items.map(i=>i.id===parentId?{...i,subtasks:(i.subtasks||[]).map(s=>s.id===subId?{...s,done:!s.done}:s)}:i);
+    setItems(u); persist(u,null);
+    if(detailItem?.id===parentId) setDetailItem(u.find(i=>i.id===parentId));
+  };
+  const deleteSubtask = (parentId, subId) => {
+    const u = items.map(i=>i.id===parentId?{...i,subtasks:(i.subtasks||[]).filter(s=>s.id!==subId)}:i);
+    setItems(u); persist(u,null);
+    if(detailItem?.id===parentId) setDetailItem(u.find(i=>i.id===parentId));
+  };
+
   const deleteItem = id => {
     const item = items.find(i=>i.id===id);
     const u=items.filter(i=>i.id!==id); setItems(u); persist(u,null);
@@ -503,6 +536,39 @@ function App() {
   const deferToNextWeek = item => { const nd=toKey(addDays(new Date(item.dueDate),7)); updateItemField(item.id,{dueDate:nd,deferred:true}); setDeferItem(null); };
   const extendTime = (item,mins) => { updateItemField(item.id,{estimatedMins:(item.estimatedMins||60)+mins}); setExtendItem(null); };
   const acceptSug = sug => { updateItemField(sug.taskId,{dueDate:sug.sugDate,dueTime:sug.sugStart}); setSuggestions(p=>p.filter(s=>s.taskId!==sug.taskId)); };
+
+  // ── COUNTDOWN for meetings ──
+  const getCountdown = (item) => {
+    const now = new Date(); const nowM = now.getHours()*60+now.getMinutes();
+    const t = item.type==="appointment" ? item.startTime : item.dueTime;
+    if(!t || item.dueDate!==todayKey()) return null;
+    const diff = toMins(t) - nowM;
+    const endDiff = item.endTime ? toMins(item.endTime) - nowM : diff+60;
+    if(diff<=0 && endDiff>0) return { label:"🔴 In Progress", pulse:true, color:"#DC2626" };
+    if(diff<0) return null;
+    if(diff<=60) return { label:`Starts in ${diff}m`, pulse:false, color:"#D97706" };
+    return { label:`in ${Math.floor(diff/60)}h ${diff%60}m`, pulse:false, color:"#6B7280" };
+  };
+
+  // ── TASK STATUS ──
+  const getTaskStatus = (item) => {
+    if(item.done) return "completed";
+    if(item.type==="appointment") return "meeting";
+    const now = new Date(); const today2 = todayKey(); const nowM = now.getHours()*60+now.getMinutes();
+    if(item.dueDate < today2) return "overdue";
+    if(item.dueDate === today2 && item.dueTime && toMins(item.dueTime)-nowM<=120) return "due_soon";
+    const tomorrow2 = toKey(addDays(now,1));
+    if(item.dueDate<=tomorrow2) return "due_soon";
+    return item.dueDate ? "scheduled" : "unscheduled";
+  };
+  const STATUS = {
+    completed:   { color:"#059669", bg:"#F0FDF4", border:"#A7F3D0", dot:"#059669" },
+    overdue:     { color:"#DC2626", bg:"#FEF2F2", border:"#FECACA", dot:"#DC2626" },
+    due_soon:    { color:"#D97706", bg:"#FFFBEB", border:"#FDE68A", dot:"#D97706" },
+    scheduled:   { color:"#1D4ED8", bg:"#EFF6FF", border:"#BFDBFE", dot:"#3B82F6" },
+    unscheduled: { color:"#6B7280", bg:"#F9FAFB", border:"#E5E7EB", dot:"#9CA3AF" },
+    meeting:     { color:"#1D4ED8", bg:"#EFF6FF", border:"#BFDBFE", dot:"#3B82F6" },
+  };
 
   // derived
   const today      = new Date();
@@ -629,64 +695,156 @@ function App() {
     navLbl: a=>({ fontSize:8, fontWeight:700, letterSpacing:1, textTransform:"uppercase", color:a?C.blue:C.textL }),
     navAlert:{ position:"absolute", top:6, right:8, width:8, height:8, borderRadius:"50%", background:"#EF4444", border:"2px solid #fff" },
     empty:{ textAlign:"center", padding:"24px 8px", color:C.textL },
+    // Status badge
+    statusBadge: (st)=>({ display:"inline-flex",alignItems:"center",gap:3,fontSize:9,fontWeight:800,letterSpacing:0.8,color:STATUS[st]?.color||"#6B7280",background:STATUS[st]?.bg||"#F9FAFB",border:`1px solid ${STATUS[st]?.border||"#E5E7EB"}`,borderRadius:5,padding:"2px 6px" }),
+    // Subtask progress bar
+    subtaskBar:{ background:"#E5E7EB",borderRadius:4,height:4,overflow:"hidden",marginTop:5 },
+    subtaskFill: pct=>({ height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,#059669,#34D399)`,borderRadius:4,transition:"width .4s" }),
+    // Energy tag pill
+    energyTag: tag=>({ display:"inline-flex",alignItems:"center",gap:3,fontSize:9,fontWeight:800,color:tag.color,background:tag.bg,border:`1px solid ${tag.color}33`,borderRadius:5,padding:"2px 7px" }),
+    // Focus mode overlay
+    focusCard:{ background:"linear-gradient(135deg,#1E3A8A,#1D4ED8)",borderRadius:18,padding:"20px 16px",marginBottom:12,color:"#fff",boxShadow:"0 8px 32px rgba(30,64,175,0.3)" },
+    // Countdown
+    countdownChip: (c)=>({ display:"inline-flex",alignItems:"center",gap:4,fontSize:10,fontWeight:800,color:c||"#D97706",background:c==="#DC2626"?"#FEF2F2":"#FFF7ED",border:`1.5px solid ${c||"#D97706"}44`,borderRadius:8,padding:"3px 8px" }),
+    // Pulse animation (inline)
+    pulseDot:{ width:8,height:8,borderRadius:"50%",background:"#DC2626",display:"inline-block",marginRight:4,animation:"pulse 1.5s infinite" },
     countdownPill: mins=>({ display:"inline-flex", alignItems:"center", gap:4, background:mins<=10?"#FEF2F2":"#FFF7ED", border:`1.5px solid ${mins<=10?C.red:C.orange}`, borderRadius:20, padding:"4px 12px", fontSize:13, fontWeight:900, color:mins<=10?C.red:C.orange }),
     notifBanner:{ background:"#EFF6FF", border:`1.5px solid #BFDBFE`, borderRadius:12, padding:"10px 13px", marginBottom:12, display:"flex", justifyContent:"space-between", alignItems:"center" },
   };
 
   // ── ITEM CARD ──
   const ItemCard = ({ item, showDate=false }) => {
-    const isApt=item.type==="appointment";
-    const isOverdue=!item.done&&item.dueDate<todayKey()&&!isApt;
-    const timeLabel=isApt&&item.startTime&&item.endTime?`${fmt(item.startTime)} – ${fmt(item.endTime)}`:item.dueTime?fmt(item.dueTime):"";
-    const dur=isApt?durLabel(item.startTime,item.endTime):item.estimatedMins?`~${item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}`:"";
-    const actionsDone=(item.actionItems||[]).filter(a=>a.done).length;
-    const actionsTotal=(item.actionItems||[]).length;
-    const hasNotes=item.notes&&item.notes.trim().length>0;
+    const isApt = item.type==="appointment";
+    const status = getTaskStatus(item);
+    const st = STATUS[status];
+    const isOverdue = status==="overdue";
+    const countdown = getCountdown(item);
+    const timeLabel = isApt&&item.startTime&&item.endTime ? `${fmt(item.startTime)} – ${fmt(item.endTime)}` : item.dueTime ? fmt(item.dueTime) : "";
+    const dur = isApt ? durLabel(item.startTime,item.endTime) : item.estimatedMins ? `~${item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}` : "";
+    const actionsDone = (item.actionItems||[]).filter(a=>a.done).length;
+    const actionsTotal = (item.actionItems||[]).length;
+    const subtasks = item.subtasks||[];
+    const subDone = subtasks.filter(s=>s.done).length;
+    const subTotal = subtasks.length;
+    const subPct = subTotal>0 ? Math.round((subDone/subTotal)*100) : 0;
+    const hasNotes = item.notes&&item.notes.trim().length>0;
+    const energyTag = ENERGY_TAGS.find(t=>t.value===item.energyTag);
+    const [subInput, setSubInput] = useState("");
+
+    // Apply energy filter
+    if(energyFilter && item.energyTag !== energyFilter && !isApt) return null;
+
+    // Card border color based on status
+    const borderColor = item.done ? C.border : isApt ? C.blue+"44" : st.border;
+    const borderLeft = item.done ? "#CBD5E1" : isApt ? C.blue : st.color;
+    const bgColor = item.done ? "#F8FAFC" : isApt ? "#EFF6FF" : st.bg;
+
     return (
-      <div style={S.iCard(item.done,item.priority,item.type)}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
-            {!isApt
-              ? <div style={S.chk(item.done,item.priority)} onClick={()=>toggleDone(item.id)}>{item.done&&<span style={{fontSize:9,color:"#fff",fontWeight:900}}>✓</span>}</div>
-              : <span style={{fontSize:17,flexShrink:0,marginTop:1}}>📅</span>
-            }
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{...S.iTitle(item.done),cursor:"pointer"}} onClick={()=>setDetailItem(item)}>{item.title}</div>
-              <div style={S.tagRow}>
-                {!isApt&&<span style={S.badge(PRIORITY[item.priority].color,PRIORITY[item.priority].bg,PRIORITY[item.priority].border)}>{PRIORITY[item.priority].label}</span>}
-                <span style={S.catBadge(item.category)}>{CATEGORY[item.category].icon}</span>
-                {showDate&&<span style={{...S.tTag,color:C.textM,background:"#F1F5F9"}}>{item.dueDate}</span>}
-                {timeLabel&&<span style={S.tTag}>{timeLabel}</span>}
-                {dur&&<span style={S.dTag}>{dur}</span>}
-                {item.recurrence&&item.recurrence!=="none"&&<span style={S.badge(C.purple,C.purpleL,"#DDD6FE")}>🔄</span>}
-                {item.fromGcal&&<span style={S.gcalTag}>GCal</span>}
-                {isOverdue&&<span style={S.badge(C.red,"#FEF2F2","#FECACA")}>OVERDUE</span>}
-                {item.deferred&&<span style={S.badge(C.purple,C.purpleL,"#DDD6FE")}>↷</span>}
-                {actionsTotal>0&&<span style={S.actionCount(actionsTotal)}>✅ {actionsDone}/{actionsTotal}</span>}
+      <div className="task-card" style={{background:bgColor,border:`1.5px solid ${borderColor}`,borderLeft:`4px solid ${borderLeft}`,borderRadius:14,padding:"12px 12px 10px",marginBottom:8,opacity:item.done?0.55:1,transition:"opacity .3s"}}>
+        <div style={{display:"flex",gap:9,alignItems:"flex-start"}}>
+          {/* Checkbox */}
+          {!isApt
+            ? <div style={{width:22,height:22,minWidth:22,borderRadius:7,border:`2px solid ${item.done?st.color:C.border}`,background:item.done?st.color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",marginTop:1,cursor:"pointer",flexShrink:0,transition:"all .2s"}} onClick={()=>toggleDone(item.id)}>
+                {item.done&&<span style={{fontSize:11,color:"#fff",fontWeight:900}}>✓</span>}
               </div>
-              {hasNotes&&<div style={S.noteSnippet}>📝 {item.notes.length>60?item.notes.slice(0,60)+"…":item.notes}</div>}
-              <div style={S.chipRow}>
-                <span style={S.chip(C.blue,"#EFF6FF")} onClick={()=>setDetailItem(item)}>✏️ Edit / Details</span>
-                {!isApt&&!item.done&&<span style={S.chip(C.purple,C.purpleL)} onClick={()=>setDeferItem(item)}>↷</span>}
-                {!isApt&&!item.done&&<span style={S.chip(C.blue,C.blueL)} onClick={()=>setExtendItem(item)}>+ Time</span>}
-                {isApt&&!item.done&&<span style={S.chip("#6B7280","#F3F4F6")} onClick={()=>cancelItem(item.id)}>✕ Cancel</span>}
-                {!isApt&&<span style={S.chip(C.red,C.redL)} onClick={()=>setDeleteConfirm(item)}>🗑</span>}
+            : <span style={{fontSize:18,flexShrink:0,marginTop:1}}>📅</span>
+          }
+          <div style={{flex:1,minWidth:0}}>
+            {/* Title row */}
+            <div style={{fontSize:14,fontWeight:700,color:item.done?C.textL:C.text,textDecoration:item.done?"line-through":"none",marginBottom:4,lineHeight:1.3,cursor:"pointer"}} onClick={()=>setDetailItem(item)}>{item.title}</div>
+
+            {/* Tags row */}
+            <div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center",marginBottom:4}}>
+              {/* Status badge */}
+              {!isApt&&<span style={S.statusBadge(status)}><span style={{width:5,height:5,borderRadius:"50%",background:st.dot,display:"inline-block"}}></span>{status==="overdue"?"Overdue":status==="due_soon"?"Due Soon":status==="scheduled"?"Scheduled":status==="completed"?"Done":"–"}</span>}
+              {/* Priority */}
+              {!isApt&&<span style={S.badge(PRIORITY[item.priority].color,PRIORITY[item.priority].bg,PRIORITY[item.priority].border)}>{PRIORITY[item.priority].label}</span>}
+              {/* Category */}
+              <span style={S.catBadge(item.category)}>{CATEGORY[item.category].icon}</span>
+              {/* Date */}
+              {showDate&&<span style={{...S.tTag,color:C.textM,background:"#F1F5F9",fontSize:9}}>{item.dueDate}</span>}
+              {/* Time */}
+              {timeLabel&&<span style={{...S.tTag,fontSize:10}}>{timeLabel}</span>}
+              {/* Duration */}
+              {dur&&<span style={S.dTag}>{dur}</span>}
+              {/* Recurrence */}
+              {item.recurrence&&item.recurrence!=="none"&&<span style={S.badge(C.purple,C.purpleL,"#DDD6FE")}>🔄</span>}
+              {/* GCal */}
+              {item.fromGcal&&<span style={S.gcalTag}>GCal</span>}
+              {/* Energy tag */}
+              {energyTag&&<span style={S.energyTag(energyTag)}>{energyTag.label}</span>}
+              {/* Action items count */}
+              {actionsTotal>0&&<span style={S.actionCount(actionsTotal)}>✅ {actionsDone}/{actionsTotal}</span>}
+              {/* Subtask count */}
+              {subTotal>0&&<span style={{fontSize:9,color:"#059669",background:"#F0FDF4",border:"1px solid #A7F3D0",borderRadius:4,padding:"2px 6px",fontWeight:700}}>◻ {subDone}/{subTotal}</span>}
+            </div>
+
+            {/* Countdown for meetings */}
+            {countdown&&<div style={{marginBottom:5}}>
+              <span style={S.countdownChip(countdown.color)}>
+                {countdown.pulse&&<span style={S.pulseDot}/>}{countdown.label}
+              </span>
+            </div>}
+
+            {/* Subtask progress bar */}
+            {subTotal>0&&<div style={{marginBottom:5}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+                <span style={{fontSize:9,color:C.textL,fontWeight:700}}>Progress</span>
+                <span style={{fontSize:9,color:"#059669",fontWeight:800}}>{subPct}%</span>
               </div>
-              {/* Action items preview on card */}
-              {(item.actionItems||[]).filter(a=>!a.done).length>0&&(
-                <div style={{marginTop:5,paddingTop:5,borderTop:`1px solid ${C.border}`}}>
-                  {(item.actionItems||[]).filter(a=>!a.done).slice(0,2).map(a=>(
-                    <div key={a.id} style={{fontSize:11,color:"#0D9488",display:"flex",gap:5,alignItems:"center",marginBottom:2}}>
-                      <span>→</span><span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.text}</span>
+              <div style={S.subtaskBar}><div style={S.subtaskFill(subPct)}/></div>
+            </div>}
+
+            {/* Notes snippet */}
+            {hasNotes&&<div style={S.noteSnippet}>📝 {item.notes.length>55?item.notes.slice(0,55)+"…":item.notes}</div>}
+
+            {/* Action items preview */}
+            {(item.actionItems||[]).filter(a=>!a.done).length>0&&(
+              <div style={{marginTop:4,paddingTop:4,borderTop:`1px solid ${C.border}`}}>
+                {(item.actionItems||[]).filter(a=>!a.done).slice(0,2).map(a=>(
+                  <div key={a.id} style={{fontSize:11,color:"#0D9488",display:"flex",gap:5,alignItems:"center",marginBottom:1}}>
+                    <span>→</span><span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.text}</span>
+                  </div>
+                ))}
+                {(item.actionItems||[]).filter(a=>!a.done).length>2&&<div style={{fontSize:9,color:C.textL}}>+{(item.actionItems||[]).filter(a=>!a.done).length-2} more</div>}
+              </div>
+            )}
+
+            {/* Subtasks list (expandable) */}
+            {subTotal>0&&expandedSubtasks.has(item.id)&&(
+              <div style={{marginTop:6,paddingTop:5,borderTop:`1px solid ${C.border}`}}>
+                {subtasks.map(s=>(
+                  <div key={s.id} style={{display:"flex",gap:7,alignItems:"center",padding:"3px 0"}}>
+                    <div style={{width:16,height:16,minWidth:16,borderRadius:4,border:`2px solid ${s.done?"#059669":C.border}`,background:s.done?"#059669":"#fff",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}} onClick={()=>toggleSubtask(item.id,s.id)}>
+                      {s.done&&<span style={{fontSize:8,color:"#fff",fontWeight:900}}>✓</span>}
                     </div>
-                  ))}
-                  {(item.actionItems||[]).filter(a=>!a.done).length>2&&<div style={{fontSize:10,color:C.textL}}>+{(item.actionItems||[]).filter(a=>!a.done).length-2} more</div>}
+                    <span style={{fontSize:12,color:s.done?C.textL:C.text,textDecoration:s.done?"line-through":"none",flex:1}}>{s.text}</span>
+                    <button style={{background:"none",border:"none",color:C.border,fontSize:11,cursor:"pointer"}} onClick={()=>deleteSubtask(item.id,s.id)}>✕</button>
+                  </div>
+                ))}
+                {/* Add subtask input */}
+                <div style={{display:"flex",gap:6,marginTop:5}}>
+                  <input style={{flex:1,background:"#F8FAFC",border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 8px",fontSize:12,outline:"none",fontFamily:"inherit"}}
+                    placeholder="Add subtask…" value={subInput} onChange={e=>setSubInput(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter"){ addSubtask(item.id,subInput); setSubInput(""); }}}
+                  />
+                  <button style={{background:C.teal,border:"none",borderRadius:7,padding:"5px 10px",color:"#fff",fontSize:12,cursor:"pointer",fontWeight:700}} onClick={()=>{ addSubtask(item.id,subInput); setSubInput(""); }}>+</button>
                 </div>
-              )}
+              </div>
+            )}
+
+            {/* Chip row */}
+            <div style={{display:"flex",gap:5,marginTop:7,flexWrap:"wrap"}}>
+              <span style={S.chip(C.blue,"#EFF6FF")} onClick={()=>setDetailItem(item)}>✏️ Edit</span>
+              {!isApt&&!item.done&&<span style={S.chip(C.purple,C.purpleL)} onClick={()=>setDeferItem(item)}>↷</span>}
+              {!isApt&&!item.done&&<span style={S.chip(C.blue,C.blueL)} onClick={()=>setExtendItem(item)}>+Time</span>}
+              {!isApt&&<span style={S.chip("#059669","#F0FDF4")} onClick={()=>setExpandedSubtasks(p=>{ const n=new Set(p); n.has(item.id)?n.delete(item.id):n.add(item.id); return n; })}>◻ {subTotal>0?`${subDone}/${subTotal}`:"Sub"}</span>}
+              {isApt&&!item.done&&<span style={S.chip("#6B7280","#F3F4F6")} onClick={()=>cancelItem(item.id)}>✕ Cancel</span>}
+              {!isApt&&<span style={S.chip(C.red,C.redL)} onClick={()=>setDeleteConfirm(item)}>🗑</span>}
             </div>
           </div>
+          <button style={S.delBtn} onClick={()=>setDeleteConfirm(item)}>✕</button>
         </div>
-        <button style={S.delBtn} onClick={()=>deleteItem(item.id)}>✕</button>
       </div>
     );
   };
@@ -824,6 +982,13 @@ function App() {
           </>}
             <div style={S.lbl}>Repeat</div>
             <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>{RECURRENCE_OPTS.map(r=><button key={r.value} style={S.recBtn(editRecurrence===r.value)} onClick={()=>setEditRecurrence(r.value)}>{r.label}</button>)}</div>
+            {!isApt&&<><div style={S.lbl}>Energy Tag</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
+              <button style={{padding:"6px 10px",borderRadius:8,border:`1.5px solid ${!item.energyTag?C.blue:C.border}`,background:!item.energyTag?C.blueL:"#F8FAFC",color:!item.energyTag?C.blue:C.textL,fontSize:10,fontWeight:700,cursor:"pointer"}} onClick={()=>updateItemField(item.id,{energyTag:null})}>None</button>
+              {ENERGY_TAGS.map(tag=>(
+                <button key={tag.value} style={{padding:"6px 10px",borderRadius:8,border:`1.5px solid ${item.energyTag===tag.value?tag.color:C.border}`,background:item.energyTag===tag.value?tag.bg:"#F8FAFC",color:item.energyTag===tag.value?tag.color:C.textL,fontSize:10,fontWeight:700,cursor:"pointer"}} onClick={()=>updateItemField(item.id,{energyTag:tag.value})}>{tag.label}</button>
+              ))}
+            </div></>}
             <div style={S.lbl}>Notes</div>
             <textarea style={{...S.textarea,border:`1.5px solid ${C.blue}55`}} value={localNotes} onChange={e=>setLocalNotes(e.target.value)}/>
             <button style={S.aBtn(C.green)} onClick={saveEdits}>✅ Save Changes</button>
@@ -1011,6 +1176,31 @@ function App() {
     );
   };
 
+  // ── FOCUS MODE RENDER ──
+  const renderFocusMode = () => {
+    const urgent = [...items].filter(i=>!i.done&&i.type==="task").sort((a,b)=>{
+      const s = {overdue:0,due_soon:1,scheduled:2,unscheduled:3};
+      return (s[getTaskStatus(a)]||3)-(s[getTaskStatus(b)]||3);
+    })[0];
+    const nextMeeting = items.filter(i=>i.type==="appointment"&&!i.done&&i.dueDate>=todayKey()).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||(a.startTime||"").localeCompare(b.startTime||""))[0];
+    return (
+      <div style={{padding:"0 0 80px"}}>
+        <div style={{background:"linear-gradient(135deg,#1E3A8A,#0EA5E9)",borderRadius:16,padding:"16px",marginBottom:12,color:"#fff"}}>
+          <div style={{fontSize:10,fontWeight:800,letterSpacing:2,textTransform:"uppercase",opacity:.7,marginBottom:4}}>🎯 Focus Mode</div>
+          <div style={{fontSize:11,opacity:.6}}>Showing only what matters right now</div>
+        </div>
+        {urgent?<div>
+          <div style={{fontSize:10,fontWeight:800,color:C.textL,letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Most Urgent Task</div>
+          <ItemCard item={urgent} showDate/>
+        </div>:<div style={S.empty}>🎉 No urgent tasks!</div>}
+        {nextMeeting&&<div style={{marginTop:16}}>
+          <div style={{fontSize:10,fontWeight:800,color:C.textL,letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Next Meeting</div>
+          <ItemCard item={nextMeeting} showDate/>
+        </div>}
+      </div>
+    );
+  };
+
   const renderAll = () => {
     const allP=items.filter(i=>!i.done&&i.type==="task"); const hi=allP.filter(i=>i.priority==="high").length; const md=allP.filter(i=>i.priority==="medium").length; const lo=allP.filter(i=>i.priority==="low").length; const mt=items.filter(i=>i.type==="appointment"&&!i.done).length;
     return (<>
@@ -1022,7 +1212,29 @@ function App() {
         <div style={S.groupRow}>{["type","priority","category"].map(g=><button key={g} style={S.groupBtn(allGroup===g,C.blue)} onClick={()=>setAllGroup(g)}>{g==="type"?"By Type":g==="priority"?"By Priority":"By Category"}</button>)}</div>
       </div>
       {renderActionItemsOverview()}
-      <div style={S.card}><BreakdownSection groupMode={allGroup} itemList={allFiltered}/></div>
+      {/* Energy tag filter bar */}
+      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
+        <button style={{padding:"6px 12px",borderRadius:20,border:`1.5px solid ${!energyFilter?C.blue:C.border}`,background:!energyFilter?C.blueL:"#F8FAFC",color:!energyFilter?C.blue:C.textL,fontSize:11,fontWeight:700,cursor:"pointer"}} onClick={()=>setEnergyFilter(null)}>All</button>
+        {ENERGY_TAGS.map(tag=>(
+          <button key={tag.value} style={{padding:"6px 11px",borderRadius:20,border:`1.5px solid ${energyFilter===tag.value?tag.color:C.border}`,background:energyFilter===tag.value?tag.bg:"#F8FAFC",color:energyFilter===tag.value?tag.color:C.textL,fontSize:11,fontWeight:700,cursor:"pointer"}} onClick={()=>setEnergyFilter(energyFilter===tag.value?null:tag.value)}>{tag.label}</button>
+        ))}
+      </div>
+      {/* Active tasks */}
+      <div style={S.card}>
+        <BreakdownSection groupMode={allGroup} itemList={allFiltered.filter(i=>!i.done)}/>
+      </div>
+      {/* Completed accordion */}
+      {allFiltered.filter(i=>i.done).length>0&&(
+        <div style={{...S.card,marginTop:0}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setShowCompleted(!showCompleted)}>
+            <div style={{fontSize:10,fontWeight:800,color:C.textL,letterSpacing:2,textTransform:"uppercase"}}>✅ Completed ({allFiltered.filter(i=>i.done).length})</div>
+            <span style={{color:C.textL,fontSize:14}}>{showCompleted?"▲":"▼"}</span>
+          </div>
+          {showCompleted&&<div style={{marginTop:10}}>
+            {allFiltered.filter(i=>i.done).map(i=><ItemCard key={i.id} item={i} showDate/>)}
+          </div>}
+        </div>
+      )}
     </>);
   };
 
@@ -1034,7 +1246,12 @@ function App() {
         <div style={S.greeting}>Good {today.getHours()<12?"Morning":today.getHours()<18?"Afternoon":"Evening"}, Ye Win 👋</div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
           <div style={S.appName}>TaskMaster Pro</div>
+          <div style={{display:"flex",gap:7,alignItems:"center"}}>
           <div style={{background:"rgba(255,255,255,0.2)",borderRadius:20,padding:"4px 10px",fontSize:10,color:"#fff",fontWeight:700}}>✅ GCal Live</div>
+          <button onClick={()=>setFocusMode(!focusMode)} style={{background:focusMode?"#F59E0B":"rgba(255,255,255,0.15)",border:"none",borderRadius:20,padding:"4px 11px",fontSize:10,color:"#fff",fontWeight:800,cursor:"pointer",letterSpacing:0.5}}>
+            {focusMode?"🎯 Focus ON":"🎯 Focus"}
+          </button>
+        </div>
         </div>
         <div style={S.subLine}>{USER_EMAIL} · SGT</div>
         <div style={S.statsRow}>
@@ -1077,9 +1294,11 @@ function App() {
       )}
 
       <div style={S.content}>
+        {focusMode ? renderFocusMode() : (<>
         {tab==="alarms"    && renderAlarms()}
         {tab==="week"      && renderWeek()}
         {tab==="all"       && renderAll()}
+        </>)}
         {tab==="sync" && (() => {
           const C2={blue:"#1E40AF",blueL:"#DBEAFE",green:"#059669",greenL:"#F0FDF4",red:"#DC2626",redL:"#FEF2F2",amber:"#D97706",border:"#E2E8F0",textL:"#94A3B8",textM:"#475569",text:"#1E293B",card:"#FFFFFF",teal:"#0D9488",tealL:"#F0FDFA"};
           return (<>
@@ -1204,6 +1423,13 @@ function App() {
           }}>✨ Auto Schedule — Next Free Slot</button>
           div></>}
           <div style={S.lbl}>Repeat</div><div style={S.recRow}>{RECURRENCE_OPTS.map(r=><button key={r.value} style={S.recBtn(form.recurrence===r.value)} onClick={()=>setForm({...form,recurrence:r.value})}>{r.label}</button>)}</div>
+          {!isApt&&<><div style={S.lbl}>Energy Tag <span style={{color:C.textL,fontWeight:400}}>(optional)</span></div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:11}}>
+            <button style={{padding:"6px 10px",borderRadius:8,border:`1.5px solid ${!form.energyTag?C.blue:C.border}`,background:!form.energyTag?C.blueL:"#F8FAFC",color:!form.energyTag?C.blue:C.textL,fontSize:10,fontWeight:700,cursor:"pointer"}} onClick={()=>setForm({...form,energyTag:null})}>None</button>
+            {ENERGY_TAGS.map(tag=>(
+              <button key={tag.value} style={{padding:"6px 10px",borderRadius:8,border:`1.5px solid ${form.energyTag===tag.value?tag.color:C.border}`,background:form.energyTag===tag.value?tag.bg:"#F8FAFC",color:form.energyTag===tag.value?tag.color:C.textL,fontSize:10,fontWeight:700,cursor:"pointer"}} onClick={()=>setForm({...form,energyTag:tag.value})}>{tag.label}</button>
+            ))}
+          </div></>}
           <div style={S.lbl}>Notes (optional)</div>
           <textarea style={S.textarea} placeholder="Notes, specs, contact info…" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
           {((form.type==="task"&&form.priority==="high"&&form.dueTime)||(form.type==="appointment"&&form.startTime))&&<div style={{background:"#FEF3C7",border:"1.5px solid #FDE68A",borderRadius:10,padding:"8px 12px",marginBottom:8,fontSize:11,color:C.amber,fontWeight:600}}>⏰ Alarm will fire 30 min before</div>}
