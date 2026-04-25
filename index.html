@@ -115,6 +115,17 @@ async function gcalCreateEvent(token, item) {
   return gcalFetch(token, "/calendars/primary/events", "POST", body);
 }
 
+async function gcalUpdateEvent(token, gcalId, item) {
+  const isApt = item.type==="appointment";
+  let body;
+  if(isApt && item.startTime && item.endTime) {
+    body = { summary:item.title, description:item.notes||"", start:{dateTime:item.dueDate+"T"+item.startTime+":00+08:00",timeZone:"Asia/Singapore"}, end:{dateTime:item.dueDate+"T"+item.endTime+":00+08:00",timeZone:"Asia/Singapore"} };
+  } else {
+    const desc = ["[Task] "+(item.priority?.toUpperCase()||"MEDIUM")+" priority", item.dueTime?"Scheduled: "+item.dueTime+" SGT":"", item.estimatedMins?"Est: "+(item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"):"", item.notes||""].filter(Boolean).join(" | ");
+    body = { summary:"☐ "+item.title, description:desc, start:{date:item.dueDate}, end:{date:item.dueDate}, colorId:item.priority==="high"?"11":item.priority==="medium"?"5":"2" };
+  }
+  return gcalFetch(token, "/calendars/primary/events/"+gcalId, "PATCH", body);
+}
 async function gcalDeleteEvent(token, gcalId) {
   return gcalFetch(token, "/calendars/primary/events/"+gcalId, "DELETE");
 }
@@ -935,7 +946,9 @@ function App() {
     const [localActionText, setLocalActionText] = useState("");
 
     const saveEdits = () => {
-      updateItemField(item.id, { title:editTitle.trim()||item.title, dueDate:editDate, dueTime:editDueTime, startTime:editStartTime, endTime:editEndTime, priority:editPriority, category:editCategory, location:editLocation, recurrence:editRecurrence, estimatedMins:editEstMins, notes:localNotes });
+      const updated = { title:editTitle.trim()||item.title, dueDate:editDate, dueTime:editDueTime, startTime:editStartTime, endTime:editEndTime, priority:editPriority, category:editCategory, location:editLocation, recurrence:editRecurrence, estimatedMins:editEstMins, notes:localNotes };
+      updateItemField(item.id, updated);
+      if(gcalToken && item.gcalId) gcalUpdateEvent(gcalToken, item.gcalId, {...item,...updated}).then(()=>addSyncLog("✅ Updated GCal: "+(updated.title||item.title))).catch(e=>addSyncLog("⚠️ "+e.message,false));
       setEditMode(false);
     };
 
@@ -1549,7 +1562,7 @@ function App() {
           <div style={S.stat}><div style={S.statN(totalAlerts>0?"#FCA5A5":undefined)}>{totalAlerts}</div><div style={S.statL}>Alerts</div></div>
         </div>
         <div style={S.tabBar}>
-          {[["tasks","✅ Tasks"],["meetings","📅 Meetings"],["alarms","⏰ Alarms"],["reminders","🔔 Alerts"],["sync","🔗 Sync"]].map(([k,l])=>(
+          {[["tasks","✅ Tasks"],["meetings","📅 Meetings"],["alarms","⏰ Alarms"],["sync","🔗 Sync"]].map(([k,l])=>(
             <button key={k} style={S.tabBtn(tab===k)} onClick={()=>setTab(k)}>{l}{k==="alarms"&&totalAlerts>0&&<span style={S.alarmDot}/>}</button>
           ))}
         </div>
@@ -1587,19 +1600,6 @@ function App() {
         {tab==="meetings"  && renderMeetings()}
         {tab==="alarms"    && renderAlarms()}
         {tab==="all"       && renderAll()}
-        {tab==="reminders" && (
-          <div style={{padding:"12px 16px 96px",background:"#fff",minHeight:"100vh"}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#374151",marginBottom:12}}>🔔 Reminders</div>
-            {reminders.length===0?<div style={{textAlign:"center",padding:"40px 16px",color:"#9CA3AF"}}><div style={{fontSize:36,marginBottom:8}}>🔔</div><div style={{fontSize:14,fontWeight:600}}>No reminders yet</div></div>
-              :[...reminders].sort((a,b)=>new Date(`${a.date}T${a.time}`)-new Date(`${b.date}T${b.time}`)).map(r=>(
-                <div key={r.id} style={{background:"#FFFBEB",border:"1.5px solid #FDE68A",borderLeft:"4px solid #D97706",borderRadius:10,padding:"10px 12px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                  <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:"#92400E",marginBottom:4}}>🔔 {r.title}</div><div style={{display:"flex",gap:6}}><span style={{fontSize:11,color:"#D97706"}}>📅 {r.date}</span><span style={{fontSize:11,color:"#D97706"}}>{fmt(r.time)}</span></div>{r.notes&&<div style={{fontSize:11,color:"#92400E80",marginTop:3}}>{r.notes}</div>}</div>
-                  <button style={{background:"none",border:"none",color:"#D1D5DB",fontSize:14,cursor:"pointer"}} onClick={()=>deleteReminder(r.id)}>✕</button>
-                </div>
-              ))
-            }
-          </div>
-        )}
         {tab==="sync" && (() => {
           const C2={blue:"#1E40AF",blueL:"#DBEAFE",green:"#059669",greenL:"#F0FDF4",red:"#DC2626",redL:"#FEF2F2",amber:"#D97706",border:"#E2E8F0",textL:"#94A3B8",textM:"#475569",text:"#1E293B",card:"#FFFFFF",teal:"#0D9488",tealL:"#F0FDFA"};
           return (<>
@@ -1690,10 +1690,10 @@ function App() {
         </>)}
       </div>
 
-      {(tab==="tasks"||tab==="meetings"||tab==="reminders")&&<button style={S.fab(tab==="reminders"?C.amber:tab==="meetings"?"#3B82F6":"#111827")} onClick={()=>{ if(tab==="reminders"){setRform(blankR);setModal("reminder");}else if(tab==="meetings"){setForm({...blank,type:"appointment"});setModal("task");}else{setForm(blank);setModal("task");} }}>+</button>}
+      {(tab==="tasks"||tab==="meetings")&&<button style={S.fab(tab==="meetings"?"#3B82F6":"#111827")} onClick={()=>{ if(tab==="meetings"){setForm({...blank,type:"appointment"});setModal("task");}else{setForm(blank);setModal("task");} }}>+</button>}
 
       <div style={S.nav}>
-        {[["tasks","✅","Tasks"],["meetings","📅","Meetings"],["alarms","⏰","Alarms"],["reminders","🔔","Alerts"],["sync","🔗","Sync"]].map(([k,icon,l])=>(
+        {[["tasks","✅","Tasks"],["meetings","📅","Meetings"],["alarms","⏰","Alarms"],["sync","🔗","Sync"]].map(([k,icon,l])=>(
           <button key={k} style={S.navBtn(tab===k)} onClick={()=>setTab(k)}>
             <span>{icon}</span><span style={S.navLbl(tab===k)}>{l}</span>
             {k==="alarms"&&totalAlerts>0&&<span style={S.navAlert}/>}
