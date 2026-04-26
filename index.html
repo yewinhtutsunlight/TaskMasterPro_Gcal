@@ -119,13 +119,28 @@ async function gcalUpdateEvent(token, gcalId, item) {
   const isApt = item.type==="appointment";
   let body;
   if(isApt && item.startTime && item.endTime) {
-    body = { summary:item.title, description:item.notes||"", start:{dateTime:item.dueDate+"T"+item.startTime+":00+08:00",timeZone:"Asia/Singapore"}, end:{dateTime:item.dueDate+"T"+item.endTime+":00+08:00",timeZone:"Asia/Singapore"} };
+    body = {
+      summary: item.title,
+      description: item.notes||"",
+      ...(item.location ? {location:item.location} : {}),
+      start:{ dateTime:`${item.dueDate}T${item.startTime}:00+08:00`, timeZone:"Asia/Singapore" },
+      end:  { dateTime:`${item.dueDate}T${item.endTime}:00+08:00`,   timeZone:"Asia/Singapore" },
+    };
   } else {
-    const desc = ["[Task] "+(item.priority?.toUpperCase()||"MEDIUM")+" priority", item.dueTime?"Scheduled: "+item.dueTime+" SGT":"", item.estimatedMins?"Est: "+(item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"):"", item.notes||""].filter(Boolean).join(" | ");
-    body = { summary:"☐ "+item.title, description:desc, start:{date:item.dueDate}, end:{date:item.dueDate}, colorId:item.priority==="high"?"11":item.priority==="medium"?"5":"2" };
+    const timeNote = item.dueTime ? `Scheduled: ${item.dueTime} SGT` : "";
+    const estNote = item.estimatedMins ? `Est: ${item.estimatedMins<60?item.estimatedMins+"m":Math.floor(item.estimatedMins/60)+"h"}` : "";
+    const desc = [`[Task] ${item.priority?.toUpperCase()||"MEDIUM"} priority`, timeNote, estNote, item.notes||""].filter(Boolean).join(" | ");
+    body = {
+      summary: `☐ ${item.title}`,
+      description: desc,
+      start:{ date:item.dueDate },
+      end:  { date:item.dueDate },
+      colorId: item.priority==="high"?"11":item.priority==="medium"?"5":"2",
+    };
   }
   return gcalFetch(token, "/calendars/primary/events/"+gcalId, "PATCH", body);
 }
+
 async function gcalDeleteEvent(token, gcalId) {
   return gcalFetch(token, "/calendars/primary/events/"+gcalId, "DELETE");
 }
@@ -300,15 +315,19 @@ function App() {
   const [weekGroup, setWeekGroup]     = useState("type");
   const [allGroup, setAllGroup]       = useState("type");
   const [calView, setCalView]         = useState("day"); // "day" | "3day" | "week"
+  const [meetView, setMeetView]       = useState("list"); // "list" | "3day" | "week"
+  const [meetBase, setMeetBase]       = useState(new Date()); // base date for timeline views
   const [focusMode, setFocusMode]     = useState(false);
   const [energyFilter, setEnergyFilter] = useState(null); // active energy tag filter
   const [showCompleted, setShowCompleted] = useState(false); // accordion for completed tasks
-  const [expandedSubtasks, setExpandedSubtasks] = useState(new Set());
+  const [expandedSubtasks, setExpandedSubtasks] = useState(new Set()); // which tasks show subtasks
+  // Quick-add task inline state (moved to top level to avoid hook-in-render violation)
   const [quickOpen, setQuickOpen]   = useState(false);
   const [qTitle, setQTitle]         = useState("");
   const [qDate, setQDate]           = useState(todayKey());
   const [qPriority, setQPriority]   = useState("medium");
   const qRef = useRef(null);
+  // SubInput state per item (keyed by id)
   const [subInputs, setSubInputs]   = useState({});
   const setSubInput = (id, val) => setSubInputs(p=>({...p,[id]:val}));
   const [alarmingItems, setAlarmingItems] = useState([]);
@@ -544,7 +563,19 @@ function App() {
     const r=[...reminders,{...rform,id:`rem_${Date.now()}`,createdAt:new Date().toISOString()}];
     setReminders(r); persist(null,r); setModal(null); setRform(blankR);
   };
-  const toggleDone = id => { const u=items.map(i=>i.id===id?{...i,done:!i.done}:i); setItems(u); persist(u,null); };
+  const toggleDone = id => {
+    const u=items.map(i=>i.id===id?{...i,done:!i.done}:i);
+    setItems(u); persist(u,null);
+    // Update GCal title to reflect done state
+    if(gcalToken) {
+      const item = u.find(i=>i.id===id);
+      if(item?.gcalId && item.type==="task") {
+        const newTitle = item.done ? `✓ ${item.title.replace(/^[☐✓] /,"")}` : `☐ ${item.title.replace(/^[☐✓] /,"")}`;
+        gcalUpdateEvent(gcalToken, item.gcalId, {...item, title:newTitle})
+          .catch(()=>{});
+      }
+    }
+  };
   // ── SUBTASK MANAGEMENT ──
   const addSubtask = (parentId, text) => {
     if(!text.trim()) return;
@@ -591,10 +622,19 @@ function App() {
     if(detailItem?.id===id) setDetailItem(u.find(i=>i.id===id));
   };
   const deleteReminder = id => { const r=reminders.filter(r=>r.id!==id); setReminders(r); persist(null,r); };
-  const updateItemField = (id, fields) => {
+  const updateItemField = (id, fields, syncToGcal=false) => {
     const u=items.map(i=>i.id===id?{...i,...fields}:i);
     setItems(u); persist(u,null);
     if(detailItem?.id===id) setDetailItem(u.find(i=>i.id===id));
+    // Optionally sync to GCal (used by saveEdits)
+    if(syncToGcal && gcalToken) {
+      const updatedItem = u.find(i=>i.id===id);
+      if(updatedItem?.gcalId) {
+        gcalUpdateEvent(gcalToken, updatedItem.gcalId, updatedItem)
+          .then(()=>addSyncLog("✅ Synced to GCal: "+updatedItem.title))
+          .catch(e=>addSyncLog("⚠️ GCal sync failed: "+e.message, false));
+      }
+    }
   };
   const deferToNextWeek = item => { const nd=toKey(addDays(new Date(item.dueDate),7)); updateItemField(item.id,{dueDate:nd,deferred:true}); setDeferItem(null); };
   const extendTime = (item,mins) => { updateItemField(item.id,{estimatedMins:(item.estimatedMins||60)+mins}); setExtendItem(null); };
@@ -948,7 +988,13 @@ function App() {
     const saveEdits = () => {
       const updated = { title:editTitle.trim()||item.title, dueDate:editDate, dueTime:editDueTime, startTime:editStartTime, endTime:editEndTime, priority:editPriority, category:editCategory, location:editLocation, recurrence:editRecurrence, estimatedMins:editEstMins, notes:localNotes };
       updateItemField(item.id, updated);
-      if(gcalToken && item.gcalId) gcalUpdateEvent(gcalToken, item.gcalId, {...item,...updated}).then(()=>addSyncLog("✅ Updated GCal: "+(updated.title||item.title))).catch(e=>addSyncLog("⚠️ "+e.message,false));
+      // Sync edit to GCal if item has a gcalId
+      if(gcalToken && item.gcalId) {
+        const updatedItem = {...item, ...updated};
+        gcalUpdateEvent(gcalToken, item.gcalId, updatedItem)
+          .then(()=>addSyncLog("✅ Updated in GCal: "+updatedItem.title))
+          .catch(e=>addSyncLog("⚠️ GCal update failed: "+e.message, false));
+      }
       setEditMode(false);
     };
 
@@ -1306,7 +1352,7 @@ function App() {
       </div>
     );
 
-    // Quick add inline — Todoist style (state at top level)
+    // Quick add inline — Todoist style (state lives at top level)
 
     const quickSubmit = () => {
       if(!qTitle.trim()) return;
@@ -1382,10 +1428,17 @@ function App() {
   // ── MEETINGS TAB ──
   const renderMeetings = () => {
     const now = new Date(); const todStr = todayKey();
-    const upcoming = items.filter(i=>i.type==="appointment"&&!i.done&&i.dueDate>=todStr).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||(a.startTime||"").localeCompare(b.startTime||""));
-    const past = items.filter(i=>i.type==="appointment"&&(i.done||i.dueDate<todStr)).sort((a,b)=>b.dueDate.localeCompare(a.dueDate));
+    const HOURS = Array.from({length:10},(_,i)=>i+8); // 8am-5pm
+    const toPercent = (t) => { const m=toMins(t); return ((m-(8*60))/(10*60))*100; };
+    const durPercent = (s,e) => { const sm=toMins(s),em=toMins(e); return ((em-sm)/(10*60))*100; };
+    const MEETING_COLORS = ["#3B82F6","#8B5CF6","#059669","#DC2626","#D97706","#0891B2"];
 
-    const MeetingRow = ({item}) => {
+    const upcoming = items.filter(i=>i.type==="appointment"&&!i.done&&i.dueDate>=todStr)
+      .sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||(a.startTime||"").localeCompare(b.startTime||""));
+    const past = items.filter(i=>i.type==="appointment"&&(i.done||i.dueDate<todStr))
+      .sort((a,b)=>b.dueDate.localeCompare(a.dueDate));
+
+    const MeetingCard = ({item}) => {
       const countdown = getCountdown(item);
       const actionsPending = (item.actionItems||[]).filter(a=>!a.done).length;
       return (
@@ -1404,7 +1457,6 @@ function App() {
             </div>
             {countdown&&<span style={{fontSize:11,fontWeight:700,color:countdown.color,background:countdown.pulse?"#FEF2F2":"#FFF7ED",borderRadius:7,padding:"3px 8px",flexShrink:0,border:`1px solid ${countdown.color}33`}}>{countdown.label}</span>}
           </div>
-          {/* Action items preview */}
           {(item.actionItems||[]).filter(a=>!a.done).slice(0,2).map(a=>(
             <div key={a.id} style={{fontSize:11,color:"#0D9488",display:"flex",gap:5,alignItems:"center",marginTop:2}}>
               <span>→</span><span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.text}</span>
@@ -1419,30 +1471,123 @@ function App() {
       );
     };
 
-    // Group upcoming by date
+    // Timeline view (3-day or 7-day)
+    const TimelineView = ({days}) => {
+      const dates = Array.from({length:days},(_,i)=>addDays(meetBase,i));
+      return (
+        <div style={{overflowX:"auto",paddingBottom:8}}>
+          {/* Navigation */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <button onClick={()=>setMeetBase(addDays(meetBase,-days))} style={{background:"#F3F4F6",border:"none",borderRadius:8,padding:"6px 14px",fontSize:13,cursor:"pointer",fontWeight:700}}>‹ Prev</button>
+            <button onClick={()=>setMeetBase(new Date())} style={{background:"#EFF6FF",border:"none",borderRadius:8,padding:"6px 12px",fontSize:11,cursor:"pointer",fontWeight:700,color:"#3B82F6"}}>Today</button>
+            <button onClick={()=>setMeetBase(addDays(meetBase,days))} style={{background:"#F3F4F6",border:"none",borderRadius:8,padding:"6px 14px",fontSize:13,cursor:"pointer",fontWeight:700}}>Next ›</button>
+          </div>
+          {/* Timeline grid */}
+          <div style={{display:"flex",minWidth:`${days*90+50}px`}}>
+            {/* Time column */}
+            <div style={{width:44,flexShrink:0,paddingTop:36}}>
+              {HOURS.map(h=>(
+                <div key={h} style={{height:60,display:"flex",alignItems:"flex-start",paddingTop:0}}>
+                  <span style={{fontSize:9,color:"#9CA3AF",fontWeight:600}}>{h<12?h+"am":h===12?"12pm":(h-12)+"pm"}</span>
+                </div>
+              ))}
+            </div>
+            {/* Day columns */}
+            {dates.map((date,di)=>{
+              const dk = toKey(date);
+              const isToday = sameDay(date,new Date());
+              const dayMeetings = items.filter(i=>i.type==="appointment"&&i.dueDate===dk&&i.startTime&&i.endTime);
+              return (
+                <div key={di} style={{flex:1,minWidth:86,borderLeft:"1px solid #F3F4F6"}}>
+                  {/* Day header */}
+                  <div style={{height:36,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:isToday?"#EFF6FF":"#fff",borderBottom:"1px solid #E5E7EB",borderRadius:isToday?"8px 8px 0 0":0}}>
+                    <div style={{fontSize:9,fontWeight:700,color:isToday?"#3B82F6":"#6B7280",textTransform:"uppercase"}}>{DAYS_SHORT[date.getDay()]}</div>
+                    <div style={{fontSize:14,fontWeight:800,color:isToday?"#3B82F6":"#111827",lineHeight:1}}>{date.getDate()}</div>
+                  </div>
+                  {/* Hour slots */}
+                  <div style={{position:"relative",height:600}}>
+                    {HOURS.map(h=>(
+                      <div key={h} style={{position:"absolute",top:(h-8)*60,left:0,right:0,height:60,borderTop:"1px solid #F9FAFB",background:h%2===0?"#FAFAFA":"#fff"}}/>
+                    ))}
+                    {/* Current time line */}
+                    {isToday&&(()=>{
+                      const nowM = new Date().getHours()*60+new Date().getMinutes();
+                      const top = ((nowM-(8*60))/60)*60;
+                      return top>=0&&top<=600?<div style={{position:"absolute",top,left:0,right:0,height:2,background:"#EF4444",zIndex:10}}><div style={{width:8,height:8,borderRadius:"50%",background:"#EF4444",marginTop:-3,marginLeft:-4}}/></div>:null;
+                    })()}
+                    {/* Meeting blocks */}
+                    {dayMeetings.map((m,mi)=>{
+                      const startM = toMins(m.startTime);
+                      const endM = toMins(m.endTime);
+                      const top = Math.max(0,((startM-(8*60))/60)*60);
+                      const height = Math.max(20,((endM-startM)/60)*60-2);
+                      const color = MEETING_COLORS[mi%MEETING_COLORS.length];
+                      const countdown = getCountdown(m);
+                      return (
+                        <div key={m.id} onClick={()=>setDetailItem(m)} style={{position:"absolute",top,left:2,right:2,height,background:color,borderRadius:5,padding:"2px 4px",cursor:"pointer",overflow:"hidden",zIndex:5,boxShadow:"0 1px 3px rgba(0,0,0,0.15)"}}>
+                          <div style={{fontSize:9,fontWeight:700,color:"#fff",lineHeight:1.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.title}</div>
+                          {height>30&&<div style={{fontSize:8,color:"rgba(255,255,255,0.85)"}}>{fmt(m.startTime)}</div>}
+                          {countdown?.pulse&&<div style={{width:6,height:6,borderRadius:"50%",background:"#fff",position:"absolute",top:3,right:3,animation:"pulse 1.5s infinite"}}/>}
+                        </div>
+                      );
+                    })}
+                    {/* All-day tasks on this day */}
+                    {items.filter(i=>i.type==="task"&&i.dueDate===dk&&!i.done).slice(0,2).map((t,ti)=>(
+                      <div key={t.id} style={{position:"absolute",top:4+ti*16,left:2,right:2,height:14,background:PRIORITY[t.priority]?.bg||"#F3F4F6",borderLeft:`3px solid ${PRIORITY[t.priority]?.color||"#9CA3AF"}`,borderRadius:3,padding:"1px 3px",cursor:"pointer",overflow:"hidden"}} onClick={()=>setDetailItem(t)}>
+                        <div style={{fontSize:8,color:PRIORITY[t.priority]?.color||"#374151",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</div>
+                      </div>
+                    ))}
+                    {/* Free slot indicator */}
+                    {dayMeetings.length===0&&<div style={{position:"absolute",top:((9*60+30-(8*60))/60)*60,left:2,right:2,height:((18*60-9*60-30)/60)*60,background:"rgba(16,185,129,0.04)",borderRadius:4,border:"1px dashed #A7F3D0",display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:9,color:"#059669",fontWeight:600}}>Free</span></div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    // Group upcoming by date for list view
     const byDate = {};
     upcoming.forEach(m=>{ if(!byDate[m.dueDate]) byDate[m.dueDate]=[]; byDate[m.dueDate].push(m); });
 
     return (
-      <div style={{padding:"10px 16px 96px",background:"#fff",minHeight:"100vh"}}>
-        {Object.keys(byDate).length===0&&<div style={{textAlign:"center",padding:"40px 16px",color:"#9CA3AF"}}><div style={{fontSize:40,marginBottom:8}}>📅</div><div style={{fontSize:15,fontWeight:600}}>No upcoming meetings</div><div style={{fontSize:12,marginTop:4}}>Pull from GCal to import your calendar</div></div>}
-        {Object.keys(byDate).sort().map(dk=>{
-          const d=new Date(dk); const isToday=dk===todStr;
-          return (
-            <div key={dk} style={{marginBottom:16}}>
-              <div style={{fontSize:13,fontWeight:700,color:isToday?"#059669":"#374151",marginBottom:8,paddingBottom:6,borderBottom:"2px solid "+(isToday?"#D1FAE5":"#F3F4F6")}}>
-                {isToday?"📍 Today — ":""}{DAYS_FULL[d.getDay()]}, {MONTHS[d.getMonth()]} {d.getDate()}
+      <div style={{padding:"10px 12px 96px",background:"#fff",minHeight:"100vh"}}>
+        {/* View toggle */}
+        <div style={{display:"flex",gap:5,marginBottom:12}}>
+          {[["list","☰ List"],["3day","3 Day"],["week","7 Day"]].map(([v,l])=>(
+            <button key={v} style={{flex:1,padding:"7px 0",borderRadius:9,border:`1.5px solid ${meetView===v?"#3B82F6":"#E5E7EB"}`,background:meetView===v?"#EFF6FF":"#fff",color:meetView===v?"#3B82F6":"#6B7280",fontWeight:700,fontSize:12,cursor:"pointer"}} onClick={()=>setMeetView(v)}>{l}</button>
+          ))}
+        </div>
+
+        {/* List view */}
+        {meetView==="list"&&(<>
+          {Object.keys(byDate).length===0&&<div style={{textAlign:"center",padding:"40px 16px",color:"#9CA3AF"}}><div style={{fontSize:40,marginBottom:8}}>📅</div><div style={{fontSize:15,fontWeight:600}}>No upcoming meetings</div><div style={{fontSize:12,marginTop:4}}>Pull from GCal to import</div></div>}
+          {Object.keys(byDate).sort().map(dk=>{
+            const d=new Date(dk); const isToday=dk===todStr;
+            return (
+              <div key={dk} style={{marginBottom:16}}>
+                <div style={{fontSize:13,fontWeight:700,color:isToday?"#059669":"#374151",marginBottom:8,paddingBottom:6,borderBottom:"2px solid "+(isToday?"#D1FAE5":"#F3F4F6")}}>
+                  {isToday?"📍 Today — ":""}{DAYS_FULL[d.getDay()]}, {MONTHS[d.getMonth()]} {d.getDate()}
+                </div>
+                {byDate[dk].map(m=><MeetingCard key={m.id} item={m}/>)}
               </div>
-              {byDate[dk].map(m=><MeetingRow key={m.id} item={m}/>)}
+            );
+          })}
+          {past.length>0&&<div style={{marginTop:12}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#9CA3AF",letterSpacing:0.5,textTransform:"uppercase",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",gap:8}} onClick={()=>setShowCompleted(!showCompleted)}>
+              Past Meetings ({past.length}) <span>{showCompleted?"▲":"▼"}</span>
             </div>
-          );
-        })}
-        {past.length>0&&<div style={{marginTop:12}}>
-          <div style={{fontSize:12,fontWeight:700,color:"#9CA3AF",letterSpacing:0.5,textTransform:"uppercase",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",gap:8}} onClick={()=>setShowCompleted(!showCompleted)}>
-            Past Meetings ({past.length}) <span>{showCompleted?"▲":"▼"}</span>
-          </div>
-          {showCompleted&&past.slice(0,10).map(m=><MeetingRow key={m.id} item={m}/>)}
-        </div>}
+            {showCompleted&&past.slice(0,10).map(m=><MeetingCard key={m.id} item={m}/>)}
+          </div>}
+        </>)}
+
+        {/* 3-day timeline */}
+        {meetView==="3day"&&<TimelineView days={3}/>}
+
+        {/* 7-day timeline */}
+        {meetView==="week"&&<TimelineView days={7}/>}
       </div>
     );
   };
@@ -1600,6 +1745,7 @@ function App() {
         {tab==="meetings"  && renderMeetings()}
         {tab==="alarms"    && renderAlarms()}
         {tab==="all"       && renderAll()}
+
         {tab==="sync" && (() => {
           const C2={blue:"#1E40AF",blueL:"#DBEAFE",green:"#059669",greenL:"#F0FDF4",red:"#DC2626",redL:"#FEF2F2",amber:"#D97706",border:"#E2E8F0",textL:"#94A3B8",textM:"#475569",text:"#1E293B",card:"#FFFFFF",teal:"#0D9488",tealL:"#F0FDFA"};
           return (<>
