@@ -219,6 +219,7 @@ let S = {
   editItem:     null,
   showCompleted:false,
   meetingOffset:0,         // days offset for meetings view
+  meetingDaySpan:3,        // 3 | 5 | 7
   expandedProjects: {},
 };
 
@@ -441,10 +442,12 @@ const syncFromGcal = async () => {
       const existIdx = S.items.findIndex(i => i.gcalId === ev.id);
       const newItem = gcalEventToItem(ev);
       if (existIdx >= 0) {
-        // Preserve user-edited fields
+        // Preserve user-edited fields — critically preserve id and type so tasks stay as tasks
         const existing = S.items[existIdx];
         S.items[existIdx] = {
           ...newItem,
+          id:           existing.id,                       // keep original id (user_xxx or gcal_xxx)
+          type:         existing.type || newItem.type,     // keep user-set type (task vs appointment)
           project:      existing.project      || newItem.project,
           assignee:     existing.assignee     || newItem.assignee,
           energyTag:    existing.energyTag    || newItem.energyTag,
@@ -738,59 +741,96 @@ const renderTasksTab = () => {
   return viewToggle + energyFilters + content;
 };
 
+const timeToMins = t => { if (!t) return 0; const [h,m] = t.split(':').map(Number); return h*60+(m||0); };
+
 const renderMeetingsTab = () => {
-  const baseDate = addDays(today(), S.meetingOffset * 7);
-  const endDate  = addDays(baseDate, 6);
-  const range = `${fmt(baseDate)} – ${fmt(endDate)}`;
+  const span = S.meetingDaySpan || 3;
+  const baseDate = addDays(today(), S.meetingOffset);
+  const dates = Array.from({length: span}, (_, i) => addDays(baseDate, i));
+  const endDate = dates[dates.length - 1];
+  const rangeLabel = span === 1 ? fmt(baseDate) : `${fmt(baseDate)} – ${fmt(endDate)}`;
+  const todayStr = today();
 
-  const periodMeetings = S.meetings.filter(m => m.dueDate >= baseDate && m.dueDate <= endDate);
-  const byDay = {};
-  periodMeetings.forEach(m => {
-    if (!byDay[m.dueDate]) byDay[m.dueDate] = [];
-    byDay[m.dueDate].push(m);
-  });
-  const sortedDays = Object.keys(byDay).sort();
-
-  let html = `<div class="date-nav">
-    <button class="date-nav-btn" onclick="shiftMeetings(-1)">← Prev</button>
-    <span class="date-nav-label">📅 ${range}</span>
-    <button class="date-nav-btn" onclick="shiftMeetings(1)">Next →</button>
-  </div>`;
+  let html = `
+    <div class="view-toggles">
+      <button class="view-btn ${span===3?'active':''}" onclick="setMeetingSpan(3)">3 Days</button>
+      <button class="view-btn ${span===5?'active':''}" onclick="setMeetingSpan(5)">5 Days</button>
+      <button class="view-btn ${span===7?'active':''}" onclick="setMeetingSpan(7)">7 Days</button>
+    </div>
+    <div class="date-nav" style="gap:4px">
+      <button class="date-nav-btn" onclick="shiftMeetings(${-span})">← Prev</button>
+      <span class="date-nav-label" style="font-size:12px">📅 ${rangeLabel}</span>
+      <button class="date-nav-btn" onclick="S.meetingOffset=0;render()" style="font-size:11px">Today</button>
+      <button class="date-nav-btn" onclick="shiftMeetings(${span})">Next →</button>
+    </div>`;
 
   if (!S.gcalToken) {
     html += `<div class="empty-state"><div class="es-icon">🔗</div><p>Connect Google Calendar<br>to see your meetings.</p>
     <button class="sync-btn primary" style="margin-top:12px" onclick="gcalAuth()">Connect GCal</button></div>`;
     return html;
   }
-
   if (S.syncing) {
     html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading meetings...</p></div>`;
     return html;
   }
 
-  if (sortedDays.length === 0) {
-    html += `<div class="empty-state"><div class="es-icon">🗓</div><p>No meetings this week.</p></div>`;
-    return html;
-  }
-
-  sortedDays.forEach(d => {
+  dates.forEach(d => {
     const dt = new Date(d + 'T00:00:00');
-    const isToday = d === today();
+    const isToday = d === todayStr;
+    const dayMeetings = S.meetings
+      .filter(m => m.dueDate === d)
+      .sort((a,b) => (a.startTime||'00:00').localeCompare(b.startTime||'00:00'));
+
     html += `<div class="week-day-header ${isToday?'week-day-today':''}">
       <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
       <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}</span>
       ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
     </div>`;
-    byDay[d].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||'')).forEach(m => {
-      html += `<div class="meeting-card">
-        <div class="meeting-title">${esc(m.title)}</div>
-        <div class="meeting-meta">
-          ${m.startTime ? `<span class="meeting-time">🕐 ${m.startTime}${m.endTime?' – '+m.endTime:''}</span>` : '<span class="meeting-time">All day</span>'}
-          ${m.location ? `<span class="meeting-loc">📍 ${esc(m.location)}</span>` : ''}
-        </div>
-        <button class="sync-btn success" style="margin-top:8px;padding:4px 10px;font-size:11px" onclick="meetingToTask('${m.id}')">+ Add Follow-up Task</button>
-      </div>`;
-    });
+
+    if (dayMeetings.length === 0) {
+      html += `<div style="margin:4px 16px 8px;padding:8px 12px;background:#F0FDF4;border:1px dashed #86EFAC;border-radius:8px;font-size:12px;color:#059669">✅ No meetings — day is free</div>`;
+    } else {
+      // Free time before first meeting
+      const firstStart = dayMeetings[0].startTime;
+      if (firstStart && firstStart > '08:00') {
+        const freeMins = timeToMins(firstStart) - timeToMins('08:00');
+        html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 Free until ${firstStart} · ${durLabel(freeMins)} available</div>`;
+      }
+
+      dayMeetings.forEach((m, idx) => {
+        html += `<div class="meeting-card">
+          <div class="meeting-title">${esc(m.title)}</div>
+          <div class="meeting-meta">
+            ${m.startTime ? `<span class="meeting-time">🕐 ${m.startTime}${m.endTime?' – '+m.endTime:''}</span>` : '<span class="meeting-time">All day</span>'}
+            ${m.location ? `<span class="meeting-loc">📍 ${esc(m.location)}</span>` : ''}
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <button class="sync-btn success" style="padding:4px 10px;font-size:11px" onclick="meetingToTask('${m.id}')">+ Follow-up</button>
+            <button class="sync-btn" style="padding:4px 10px;font-size:11px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE" onclick="openEditModal('${m.id}')">✏️ Edit</button>
+            <button class="sync-btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteItem('${m.id}')">🗑</button>
+          </div>
+        </div>`;
+
+        // Free gap between meetings
+        if (idx < dayMeetings.length - 1) {
+          const thisEnd = m.endTime;
+          const nextStart = dayMeetings[idx+1].startTime;
+          if (thisEnd && nextStart && nextStart > thisEnd) {
+            const gapMins = timeToMins(nextStart) - timeToMins(thisEnd);
+            if (gapMins >= 15) {
+              html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${thisEnd} – ${nextStart}</div>`;
+            }
+          }
+        }
+      });
+
+      // Free time after last meeting
+      const lastEnd = dayMeetings[dayMeetings.length-1].endTime;
+      if (lastEnd && lastEnd < '18:00') {
+        const freeMins = timeToMins('18:00') - timeToMins(lastEnd);
+        html += `<div style="margin:2px 16px 8px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 Free after ${lastEnd} · ${durLabel(freeMins)} until 18:00</div>`;
+      }
+    }
   });
 
   return html;
@@ -992,6 +1032,44 @@ function ok() { return ContentService.createTextOutput('ok'); }`;
 };
 
 // ═══════════════════════════════════════════════
+// TIME SELECT — 15-min intervals, works on all platforms
+// ═══════════════════════════════════════════════
+const timeSelectHTML = (id, value, onchangeStr) => {
+  const opts = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      opts.push(String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0'));
+    }
+  }
+  return `<select class="form-input"${id?' id="'+id+'"':''} onchange="${onchangeStr}">
+    <option value="">— None —</option>
+    ${opts.map(t => `<option value="${t}"${value===t?' selected':''}>${t}</option>`).join('')}
+  </select>`;
+};
+
+// ═══════════════════════════════════════════════
+// CHIP REFRESH — update chip visuals without full re-render (keeps keyboard open)
+// ═══════════════════════════════════════════════
+const refreshChips = key => {
+  if (!S.editItem) return;
+  const item = S.editItem;
+  if (key === 'priority') {
+    const el = document.getElementById('chips-priority');
+    if (el) el.innerHTML = Object.entries(PRIORITY).map(([k,v]) =>
+      `<span class="chip-opt ${item.priority===k?'selected':''}" style="${item.priority===k?'background:'+v.color+';color:#fff;border-color:'+v.color:''}" onclick="updateEdit('priority','${k}')">${v.label}</span>`
+    ).join('');
+  } else if (key === 'energyTag') {
+    const el = document.getElementById('chips-energyTag');
+    if (el) el.innerHTML = `<span class="chip-opt ${!item.energyTag?'selected':''}" onclick="updateEdit('energyTag','')">None</span>` +
+      ENERGY_TAGS.map(t => `<span class="chip-opt ${item.energyTag===t.value?'selected':''}" style="${item.energyTag===t.value?'background:'+t.color+';color:#fff;border-color:'+t.color:''}" onclick="updateEdit('energyTag','${t.value}')">${t.label}</span>`).join('');
+  } else if (key === 'projectStage') {
+    const el = document.getElementById('chips-projectStage');
+    if (el) el.innerHTML = `<span class="chip-opt ${!item.projectStage?'selected':''}" onclick="updateEdit('projectStage','')">None</span>` +
+      PROJECT_STAGES.map(s => `<span class="chip-opt ${item.projectStage===s.value?'selected':''}" onclick="updateEdit('projectStage','${s.value}')">${s.label}</span>`).join('');
+  }
+};
+
+// ═══════════════════════════════════════════════
 // TASK MODAL
 // ═══════════════════════════════════════════════
 const renderModal = () => {
@@ -1019,31 +1097,31 @@ const renderModal = () => {
         </div>
         <div class="form-group">
           <label class="form-label">Time</label>
-          <input class="form-input" type="time" step="900" id="f-time" value="${item.dueTime||''}" onchange="updateEdit('dueTime',this.value)"/>
+          ${timeSelectHTML('f-time', item.dueTime||'', "updateEdit('dueTime',this.value)")}
         </div>
       </div>
 
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Start Time</label>
-          <input class="form-input" type="time" step="900" value="${item.startTime||''}" onchange="updateEdit('startTime',this.value)"/>
+          ${timeSelectHTML('', item.startTime||'', "updateEdit('startTime',this.value)")}
         </div>
         <div class="form-group">
           <label class="form-label">End Time</label>
-          <input class="form-input" type="time" step="900" value="${item.endTime||''}" onchange="updateEdit('endTime',this.value)"/>
+          ${timeSelectHTML('', item.endTime||'', "updateEdit('endTime',this.value)")}
         </div>
       </div>
 
       <div class="form-group">
         <label class="form-label">Priority</label>
-        <div class="chip-select">
+        <div class="chip-select" id="chips-priority">
           ${Object.entries(PRIORITY).map(([k,v]) => `<span class="chip-opt ${item.priority===k?'selected':''}" style="${item.priority===k?'background:'+v.color+';color:#fff;border-color:'+v.color:''}" onclick="updateEdit('priority','${k}')">${v.label}</span>`).join('')}
         </div>
       </div>
 
       <div class="form-group">
         <label class="form-label">Energy Tag</label>
-        <div class="chip-select">
+        <div class="chip-select" id="chips-energyTag">
           <span class="chip-opt ${!item.energyTag?'selected':''}" onclick="updateEdit('energyTag','')">None</span>
           ${ENERGY_TAGS.map(t => `<span class="chip-opt ${item.energyTag===t.value?'selected':''}" style="${item.energyTag===t.value?'background:'+t.color+';color:#fff;border-color:'+t.color:''}" onclick="updateEdit('energyTag','${t.value}')">${t.label}</span>`).join('')}
         </div>
@@ -1063,7 +1141,7 @@ const renderModal = () => {
 
       <div class="form-group">
         <label class="form-label">Project Stage</label>
-        <div class="chip-select">
+        <div class="chip-select" id="chips-projectStage">
           <span class="chip-opt ${!item.projectStage?'selected':''}" onclick="updateEdit('projectStage','')">None</span>
           ${PROJECT_STAGES.map(s => `<span class="chip-opt ${item.projectStage===s.value?'selected':''}" onclick="updateEdit('projectStage','${s.value}')">${s.label}</span>`).join('')}
         </div>
@@ -1197,7 +1275,13 @@ const toggleProject = name => {
 };
 const closeModal = () => { S.modal = null; S.editItem = null; render(); };
 const closeModalIfBg = e => { if (e.target.classList.contains('modal-overlay')) closeModal(); };
-const updateEdit = (key, val) => { if (S.editItem) { S.editItem[key] = val; } };
+const updateEdit = (key, val) => {
+  if (!S.editItem) return;
+  S.editItem[key] = val;
+  // For chip fields: refresh visuals without full re-render (keeps keyboard open)
+  refreshChips(key);
+};
+const setMeetingSpan = n => { S.meetingDaySpan = n; S.meetingOffset = 0; render(); };
 const disconnectGcal = () => {
   if (!confirm('Disconnect Google Calendar?')) return;
   S.gcalToken = null; S.meetings = [];
