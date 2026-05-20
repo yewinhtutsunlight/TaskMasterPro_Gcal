@@ -1197,7 +1197,7 @@ const toggleProject = name => {
 };
 const closeModal = () => { S.modal = null; S.editItem = null; render(); };
 const closeModalIfBg = e => { if (e.target.classList.contains('modal-overlay')) closeModal(); };
-const updateEdit = (key, val) => { if (S.editItem) { S.editItem[key] = val; render(); } };
+const updateEdit = (key, val) => { if (S.editItem) { S.editItem[key] = val; } };
 const disconnectGcal = () => {
   if (!confirm('Disconnect Google Calendar?')) return;
   S.gcalToken = null; S.meetings = [];
