@@ -1019,18 +1019,18 @@ const renderModal = () => {
         </div>
         <div class="form-group">
           <label class="form-label">Time</label>
-          <input class="form-input" type="time" id="f-time" value="${item.dueTime||''}" onchange="updateEdit('dueTime',this.value)"/>
+          <input class="form-input" type="time" step="900" id="f-time" value="${item.dueTime||''}" onchange="updateEdit('dueTime',this.value)"/>
         </div>
       </div>
 
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Start Time</label>
-          <input class="form-input" type="time" value="${item.startTime||''}" onchange="updateEdit('startTime',this.value)"/>
+          <input class="form-input" type="time" step="900" value="${item.startTime||''}" onchange="updateEdit('startTime',this.value)"/>
         </div>
         <div class="form-group">
           <label class="form-label">End Time</label>
-          <input class="form-input" type="time" value="${item.endTime||''}" onchange="updateEdit('endTime',this.value)"/>
+          <input class="form-input" type="time" step="900" value="${item.endTime||''}" onchange="updateEdit('endTime',this.value)"/>
         </div>
       </div>
 
