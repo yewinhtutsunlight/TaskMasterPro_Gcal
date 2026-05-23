@@ -38,8 +38,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .view-toggles{display:flex;gap:6px;padding:10px 16px 4px;overflow-x:auto}
 .view-btn{flex-shrink:0;padding:5px 12px;border-radius:20px;border:1px solid #E2E8F0;background:#fff;font-size:12px;font-weight:600;color:#64748B;cursor:pointer;white-space:nowrap}
 .view-btn.active{background:#1E3A5F;color:#fff;border-color:#1E3A5F}
-.filter-row{display:flex;gap:6px;padding:6px 16px;overflow-x:auto;scrollbar-width:none}
-.filter-row::-webkit-scrollbar{display:none}
+.filter-row{display:flex;gap:6px;padding:6px 16px;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#CBD5E1 transparent}
+.filter-row::-webkit-scrollbar{height:4px}
+.filter-row::-webkit-scrollbar-track{background:transparent}
+.filter-row::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:2px}
 .filter-pill{flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid #E2E8F0;background:#fff;font-size:12px;font-weight:500;color:#64748B;cursor:pointer;white-space:nowrap}
 .filter-pill.active{background:#1E3A5F;color:#fff;border-color:#1E3A5F}
 .task-card{margin:4px 16px;background:#fff;border:1px solid #E2E8F0;border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;transition:box-shadow .2s}
@@ -381,37 +383,73 @@ const gcalFetch = async (path, opts={}) => {
 // ═══════════════════════════════════════════════
 // GCAL SYNC — fetch next 14 days only (fixes freeze)
 // ═══════════════════════════════════════════════
+// ─── Metadata helpers: embed task fields inside GCal event description ───────
+// This is what enables true cross-device sync — all metadata lives in GCal
+const TM_TAG = '<!-- TM:';
+const TM_END = ' -->';
+
+const parseTmMeta = desc => {
+  if (!desc) return null;
+  const idx = desc.indexOf(TM_TAG);
+  if (idx < 0) return null;
+  const end = desc.indexOf(TM_END, idx);
+  if (end < 0) return null;
+  try { return JSON.parse(desc.slice(idx + TM_TAG.length, end)); } catch(e) { return null; }
+};
+
+const parseVisibleNotes = desc => {
+  if (!desc) return '';
+  const idx = desc.indexOf(TM_TAG);
+  return (idx >= 0 ? desc.slice(0, idx) : desc).trim();
+};
+
+const buildGcalDescription = item => {
+  const meta = {
+    type:         item.type         || 'task',
+    project:      item.project      || '',
+    assignee:     item.assignee     || '',
+    energyTag:    item.energyTag    || '',
+    projectStage: item.projectStage || '',
+    priority:     item.priority     || 'medium',
+    id:           item.id
+  };
+  const notes = item.notes || '';
+  return notes + (notes ? '\n\n' : '') + TM_TAG + JSON.stringify(meta) + TM_END;
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 const gcalEventToItem = ev => {
+  const meta = parseTmMeta(ev.description);
+  const visibleNotes = parseVisibleNotes(ev.description);
   const start = ev.start?.dateTime || ev.start?.date || '';
   const end   = ev.end?.dateTime   || ev.end?.date   || '';
   const isAllDay = !ev.start?.dateTime;
-  const item = {
-    id:           'gcal_' + ev.id,
+  return {
+    id:           meta?.id        || ('gcal_' + ev.id),   // restore original id if saved
     gcalId:       ev.id,
-    type:         'appointment',
+    type:         meta?.type      || 'appointment',        // restore task vs appointment
     category:     'work',
-    title:        ev.summary || '(no title)',
+    title:        ev.summary      || '(no title)',
     dueDate:      start.slice(0,10),
     startTime:    isAllDay ? '' : start.slice(11,16),
     endTime:      isAllDay ? '' : end.slice(11,16),
     dueTime:      isAllDay ? '' : start.slice(11,16),
-    location:     ev.location || '',
-    notes:        ev.description || '',
-    priority:     'medium',
+    location:     ev.location     || '',
+    notes:        visibleNotes,
+    priority:     meta?.priority  || 'medium',
     recurrence:   'none',
     estimatedMins:0,
     done:         false,
     deferred:     false,
     fromGcal:     true,
     synced:       true,
-    createdAt:    ev.created || new Date().toISOString(),
+    createdAt:    ev.created      || new Date().toISOString(),
     actionItems:  [],
-    project:      '',
-    assignee:     '',
-    energyTag:    '',
-    projectStage: ''
+    project:      meta?.project      || '',   // restored from GCal description
+    assignee:     meta?.assignee     || '',
+    energyTag:    meta?.energyTag    || '',
+    projectStage: meta?.projectStage || ''
   };
-  return item;
 };
 
 const syncFromGcal = async () => {
@@ -477,7 +515,7 @@ const gcalCreateEvent = async item => {
   if (!S.gcalToken) return null;
   const body = {
     summary: item.title,
-    description: item.notes || '',
+    description: buildGcalDescription(item),
     location: item.location || '',
     start: item.startTime
       ? {dateTime: item.dueDate + 'T' + (item.startTime||'09:00') + ':00', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}
@@ -494,7 +532,7 @@ const gcalUpdateEvent = async item => {
   if (!S.gcalToken || !item.gcalId) return;
   const body = {
     summary: item.title,
-    description: item.notes || '',
+    description: buildGcalDescription(item),
     location: item.location || '',
     start: item.startTime
       ? {dateTime: item.dueDate + 'T' + (item.startTime||'09:00') + ':00', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}
@@ -628,12 +666,22 @@ const saveItem = async () => {
     try {
       if (isNew || !item.gcalId) {
         const ev = await gcalCreateEvent(item);
-        if (ev) { item.gcalId = ev.id; item.synced = true; saveData(); }
+        if (ev) {
+          item.gcalId = ev.id; item.synced = true;
+          // Update the saved entry in S.items with gcalId
+          const savedIdx = S.items.findIndex(i => i.id === item.id);
+          if (savedIdx >= 0) { S.items[savedIdx].gcalId = ev.id; S.items[savedIdx].synced = true; }
+          saveData();
+        }
       } else {
-        await gcalUpdateEvent(item);
+        await gcalUpdateEvent(item); // re-writes metadata to GCal description
+        // Update S.items with any field changes
+        const savedIdx = S.items.findIndex(i => i.id === item.id);
+        if (savedIdx >= 0) S.items[savedIdx] = {...item};
+        saveData();
       }
-      showToast('✅ Saved & synced');
-    } catch(e) { showToast('💾 Saved (GCal error: ' + e.message + ')'); }
+      showToast('✅ Saved & synced to GCal');
+    } catch(e) { showToast('💾 Saved locally (GCal: ' + e.message + ')'); }
   } else { showToast('💾 Saved locally'); }
 };
 
