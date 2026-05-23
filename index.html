@@ -210,7 +210,8 @@ let S = {
   tab:          'tasks',
   energyFilter: 'all',
   projectFilter:'all',
-  viewMode:     'today',   // today | week | project
+  viewMode:     'today',   // today | week | project | all
+  weekOffset:   0,         // weeks offset for task week view
   focusMode:    false,
   gcalToken:    null,
   gcalUser:     '',
@@ -258,11 +259,11 @@ const getGreeting = () => {
   if (h < 17) return 'Good afternoon';
   return 'Good evening';
 };
-const getWeekDates = () => {
+const getWeekDates = (offset = 0) => {
   const t = today();
   const start = new Date(t + 'T00:00:00');
   const day = start.getDay();
-  start.setDate(start.getDate() - day + (day === 0 ? -6 : 1)); // Monday
+  start.setDate(start.getDate() - day + (day === 0 ? -6 : 1) + offset * 7); // Monday + offset weeks
   return Array.from({length:7}, (_, i) => {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
@@ -301,6 +302,7 @@ const saveData = () => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({items: S.items}));
     localStorage.setItem(DELETED_KEY, JSON.stringify(S.deleted));
+    scheduleGcalBackup(); // auto-backup to GCal if connected
   } catch(e) { console.error('saveData:', e); }
 };
 
@@ -310,8 +312,8 @@ const saveData = () => {
 const getTasks = () => S.items.filter(i => i.type === 'task');
 const getOverdueItems = () => getTasks().filter(isOverdue);
 const getTodayItems  = () => getTasks().filter(isDueToday);
-const getWeekItems   = () => {
-  const week = getWeekDates();
+const getWeekItems = (offset = 0) => {
+  const week = getWeekDates(offset);
   return getTasks().filter(i => !i.done && week.includes(i.dueDate));
 };
 const getProjects = () => {
@@ -425,10 +427,7 @@ const syncFromGcal = async () => {
     });
     const data = await gcalFetch('/calendars/primary/events?' + params);
     const events = data.items || [];
-    // Update meetings list
-    S.meetings = events.map(gcalEventToItem);
     // Sync tasks: preserve user tasks, merge gcal appointments
-    const gcalIds = new Set(events.map(e => e.id));
     const deletedGcalIds = new Set(S.deleted);
     // Remove old gcal items not in range anymore (keep user tasks)
     S.items = S.items.filter(i => {
@@ -461,7 +460,11 @@ const syncFromGcal = async () => {
         S.items.push(newItem);
       }
     });
+    // Build meetings list — exclude items the user has saved as tasks (type:'task')
+    const userTaskGcalIds = new Set(S.items.filter(i => i.type === 'task' && i.gcalId).map(i => i.gcalId));
+    S.meetings = events.filter(ev => !userTaskGcalIds.has(ev.id)).map(gcalEventToItem);
     saveData();
+    scheduleGcalBackup();
     S.syncing = false; render();
     showToast('✅ Synced with Google Calendar');
   } catch(e) {
@@ -506,6 +509,69 @@ const gcalUpdateEvent = async item => {
 const gcalDeleteEvent = async gcalId => {
   if (!S.gcalToken || !gcalId) return;
   await gcalFetch('/calendars/primary/events/' + gcalId, {method:'DELETE'});
+};
+
+// ═══════════════════════════════════════════════
+// GCAL CLOUD BACKUP — transparent cross-device sync
+// ═══════════════════════════════════════════════
+const BACKUP_TITLE = '__TaskMasterPro_Backup__';
+let _backupTimer = null;
+
+const scheduleGcalBackup = () => {
+  if (!S.gcalToken) return;
+  clearTimeout(_backupTimer);
+  _backupTimer = setTimeout(saveToGcal, 4000); // debounce 4s
+};
+
+const saveToGcal = async () => {
+  if (!S.gcalToken) return;
+  try {
+    const payload = JSON.stringify({items: S.items, deleted: S.deleted, savedAt: Date.now()});
+    if (payload.length > 60000) { console.warn('Backup too large'); return; }
+    const encoded = btoa(unescape(encodeURIComponent(payload)));
+    const search = new URLSearchParams({q: BACKUP_TITLE, maxResults: '5'});
+    const result = await gcalFetch('/calendars/primary/events?' + search);
+    const existing = (result.items || []).find(e => e.summary === BACKUP_TITLE);
+    const body = {
+      summary: BACKUP_TITLE,
+      description: encoded,
+      start: {date: '2000-01-01'},
+      end: {date: '2000-01-02'},
+      visibility: 'private',
+      transparency: 'transparent'
+    };
+    if (existing) {
+      await gcalFetch('/calendars/primary/events/' + existing.id, {method:'PATCH', body:JSON.stringify(body)});
+    } else {
+      await gcalFetch('/calendars/primary/events', {method:'POST', body:JSON.stringify(body)});
+    }
+    console.log('GCal backup saved', S.items.length, 'tasks');
+  } catch(e) { console.warn('GCal backup failed:', e); }
+};
+
+const restoreFromGcal = async (silent = false) => {
+  if (!S.gcalToken) { if (!silent) showToast('Connect GCal first'); return; }
+  if (!silent) showToast('🔍 Looking for backup...');
+  try {
+    const search = new URLSearchParams({q: BACKUP_TITLE, maxResults: '5'});
+    const result = await gcalFetch('/calendars/primary/events?' + search);
+    const existing = (result.items || []).find(e => e.summary === BACKUP_TITLE);
+    if (!existing?.description) { if (!silent) showToast('No GCal backup found'); return; }
+    const payload = JSON.parse(decodeURIComponent(escape(atob(existing.description))));
+    if (payload.items && Array.isArray(payload.items)) {
+      if (!silent) {
+        const savedDate = payload.savedAt ? new Date(payload.savedAt).toLocaleDateString() : 'unknown date';
+        if (!confirm(`Restore ${payload.items.length} tasks from GCal backup (saved ${savedDate})?\n\nThis will replace your current local data.`)) return;
+      }
+      S.items = payload.items;
+      S.deleted = payload.deleted || [];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({items: S.items})); // save without triggering another backup
+      localStorage.setItem(DELETED_KEY, JSON.stringify(S.deleted));
+      render();
+      if (!silent) showToast('✅ Restored ' + payload.items.length + ' tasks from GCal');
+      else showToast('☁️ Data restored from GCal backup (' + payload.items.length + ' tasks)');
+    }
+  } catch(e) { if (!silent) showToast('⚠️ Restore failed: ' + e.message); }
 };
 
 // ═══════════════════════════════════════════════
@@ -632,19 +698,20 @@ const renderTaskCard = item => {
 // RENDER TABS
 // ═══════════════════════════════════════════════
 const renderTasksTab = () => {
+  const wo = S.weekOffset || 0;
   const overdue = applyFilters(getOverdueItems());
   const todayItems = applyFilters(getTodayItems());
-  const weekItems = applyFilters(getWeekItems());
-  const weekDates = getWeekDates();
+  const weekDates = getWeekDates(wo);
   const projects = getProjects();
   const completed = applyFilters(getTasks().filter(i=>i.done));
-  const allTasks = applyFilters(getTasks().filter(i=>!i.done));
+  const todayStr = today();
 
   const viewToggle = `
     <div class="view-toggles">
       <button class="view-btn ${S.viewMode==='today'?'active':''}" onclick="setView('today')">📅 Today</button>
-      <button class="view-btn ${S.viewMode==='week'?'active':''}" onclick="setView('week')">🗓 This Week</button>
-      <button class="view-btn ${S.viewMode==='project'?'active':''}" onclick="setView('project')">📁 By Project</button>
+      <button class="view-btn ${S.viewMode==='week'?'active':''}" onclick="setView('week')">🗓 Week</button>
+      <button class="view-btn ${S.viewMode==='project'?'active':''}" onclick="setView('project')">📁 Project</button>
+      <button class="view-btn ${S.viewMode==='all'?'active':''}" onclick="setView('all')">📋 All</button>
     </div>`;
 
   const energyFilters = `
@@ -677,11 +744,17 @@ const renderTasksTab = () => {
     content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
 
   } else if (S.viewMode === 'week') {
-    if (overdue.length > 0) {
+    const weekLabel = `${fmt(weekDates[0])} – ${fmt(weekDates[6])}`;
+    content += `<div class="date-nav" style="gap:4px">
+      <button class="date-nav-btn" onclick="shiftWeek(-1)">← Prev</button>
+      <span class="date-nav-label" style="font-size:12px">🗓 ${weekLabel}</span>
+      <button class="date-nav-btn" onclick="S.weekOffset=0;render()" style="font-size:11px">Today</button>
+      <button class="date-nav-btn" onclick="shiftWeek(1)">Next →</button>
+    </div>`;
+    if (overdue.length > 0 && wo === 0) {
       content += `<div class="section-header danger">⚠ Overdue · ${overdue.length}</div>`;
       content += overdue.map(renderTaskCard).join('');
     }
-    const todayStr = today();
     weekDates.forEach(d => {
       const dayTasks = applyFilters(getTasks().filter(i => !i.done && i.dueDate === d));
       const dt = new Date(d + 'T00:00:00');
@@ -726,6 +799,35 @@ const renderTasksTab = () => {
     if (unassigned.length > 0) {
       content += `<div class="section-header">📋 Unassigned</div>`;
       content += unassigned.map(renderTaskCard).join('');
+    }
+    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
+
+  } else if (S.viewMode === 'all') {
+    if (overdue.length > 0) {
+      content += `<div class="section-header danger">⚠ Overdue · ${overdue.length}</div>`;
+      content += overdue.map(renderTaskCard).join('');
+    }
+    const allUndone = applyFilters(getTasks().filter(i => !i.done && !isOverdue(i)))
+      .sort((a,b) => (a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
+    if (allUndone.length === 0 && overdue.length === 0) {
+      content += `<div class="empty-state"><div class="es-icon">🎉</div><p>All clear — no tasks!</p></div>`;
+    } else {
+      const byDate = {};
+      allUndone.forEach(i => { const d = i.dueDate||'__none__'; if (!byDate[d]) byDate[d]=[]; byDate[d].push(i); });
+      Object.keys(byDate).sort().forEach(d => {
+        if (d === '__none__') {
+          content += `<div class="section-header">📋 No date set</div>`;
+        } else {
+          const dt = new Date(d + 'T00:00:00');
+          const isToday = d === todayStr;
+          content += `<div class="week-day-header ${isToday?'week-day-today':''}">
+            <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
+            <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]} ${dt.getFullYear()}</span>
+            ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
+          </div>`;
+        }
+        content += byDate[d].map(renderTaskCard).join('');
+      });
     }
     content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
   }
@@ -1021,8 +1123,21 @@ function ok() { return ContentService.createTextOutput('ok'); }`;
     </div>
 
     <div class="sync-card">
+      <h3>☁️ Cross-Device Sync</h3>
+      <p style="color:#1D4ED8;font-weight:600;font-size:12px">How it works: Your tasks are saved in your browser's local storage. To use on multiple devices (iPhone home screen, another browser), use GCal Backup below — it stores your tasks inside Google Calendar so any device with GCal connected can restore them.</p>
+      <div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:12px;color:#92400E">
+        ⚠️ <strong>iPhone Home Screen:</strong> When you add this app to your home screen, it gets its own storage separate from Safari. If you reinstall or update, use "Restore from GCal" after reconnecting GCal to get your data back.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="sync-btn primary" onclick="saveToGcal().then(()=>showToast('☁️ Backup saved to GCal'))">☁️ Backup to GCal</button>
+        <button class="sync-btn success" onclick="restoreFromGcal()">📥 Restore from GCal</button>
+      </div>
+      <p class="sync-status" style="margin-top:6px">${isConnected ? '✅ GCal connected — backup available' : '❌ Connect GCal first to enable backup'}</p>
+    </div>
+
+    <div class="sync-card">
       <h3>📊 Data</h3>
-      <p>All your tasks are stored locally in your browser. Export or clear below.</p>
+      <p>Export your tasks as JSON or clear all local data.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="sync-btn success" onclick="exportData()">⬇️ Export JSON</button>
         <button class="sync-btn danger" onclick="clearData()">🗑 Clear All Data</button>
@@ -1282,6 +1397,7 @@ const updateEdit = (key, val) => {
   refreshChips(key);
 };
 const setMeetingSpan = n => { S.meetingDaySpan = n; S.meetingOffset = 0; render(); };
+const shiftWeek = n => { S.weekOffset = (S.weekOffset||0) + n; render(); };
 const disconnectGcal = () => {
   if (!confirm('Disconnect Google Calendar?')) return;
   S.gcalToken = null; S.meetings = [];
@@ -1333,7 +1449,14 @@ window.addEventListener('load', () => {
       clearInterval(waitForGoogle);
       initGcal();
       // Auto-sync if already have token
-      if (S.gcalToken) syncFromGcal();
+      if (S.gcalToken) {
+        // If local data is empty, try restoring from GCal backup first
+        if (S.items.length === 0) {
+          restoreFromGcal(true).then(() => syncFromGcal());
+        } else {
+          syncFromGcal();
+        }
+      }
     }
   }, 200);
   // Register service worker for PWA (optional)
