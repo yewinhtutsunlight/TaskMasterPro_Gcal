@@ -223,6 +223,10 @@ let S = {
   showCompleted:false,
   meetingOffset:0,         // days offset for meetings view
   meetingDaySpan:3,        // 3 | 5 | 7
+  meetingView:'upcoming',  // 'upcoming' | 'past'
+  pastMeetings:[],         // last 30 days meetings fetched on demand
+  pastMeetingsLoaded:false,
+  expandedMeetingId:null,  // id of meeting with notes open
   expandedProjects: {},
 };
 
@@ -893,7 +897,43 @@ const renderTasksTab = () => {
 
 const timeToMins = t => { if (!t) return 0; const [h,m] = t.split(':').map(Number); return h*60+(m||0); };
 
+// ═══════════════════════════════════════════════
+// MEETING CARD — shared by Upcoming & Past views
+// ═══════════════════════════════════════════════
+const renderMeetingCard = (m, isPast = false) => {
+  const expanded = S.expandedMeetingId === m.id;
+  const hasNotes = !!(m.notes && m.notes.trim());
+  return `<div class="meeting-card" style="${isPast ? 'border-left-color:#94A3B8;' : ''}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+      <div class="meeting-title" style="flex:1">${esc(m.title)}</div>
+      <button onclick="toggleMeetingNotes('${m.id}')" title="${expanded?'Close notes':'Add / view notes'}"
+        style="background:none;border:none;cursor:pointer;font-size:15px;flex-shrink:0;padding:2px 4px;border-radius:6px;color:${hasNotes?'#6366F1':'#94A3B8'}">${hasNotes?'📝':'📄'}${expanded?'▲':'▼'}</button>
+    </div>
+    <div class="meeting-meta">
+      ${m.startTime ? `<span class="meeting-time">🕐 ${m.startTime}${m.endTime?' – '+m.endTime:''}</span>` : '<span class="meeting-time">All day</span>'}
+      ${m.location ? `<span class="meeting-loc">📍 ${esc(m.location)}</span>` : ''}
+      ${m.project ? `<span class="meta-chip meta-project" style="font-size:10px">📁 ${esc(m.project)}</span>` : ''}
+    </div>
+    ${hasNotes && !expanded ? `<div style="font-size:12px;color:#475569;margin-top:6px;padding:6px 8px;background:#F8FAFC;border-radius:6px;line-height:1.5;white-space:pre-wrap">${esc(m.notes)}</div>` : ''}
+    ${expanded ? `<div style="margin-top:8px">
+      <textarea id="meeting-notes-${m.id}"
+        style="width:100%;padding:9px 10px;border:1px solid #C7D2FE;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;min-height:90px;outline:none;line-height:1.5;color:#1E293B"
+        placeholder="Meeting notes, decisions, action items, follow-ups...">${esc(m.notes||'')}</textarea>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="sync-btn primary" style="padding:5px 14px;font-size:12px" onclick="saveMeetingNotes('${m.id}')">💾 Save Notes</button>
+        <button class="sync-btn" style="padding:5px 12px;font-size:12px;background:#F1F5F9;color:#64748B;border:1px solid #E2E8F0" onclick="S.expandedMeetingId=null;render()">Cancel</button>
+      </div>
+    </div>` : ''}
+    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+      ${!isPast ? `<button class="sync-btn success" style="padding:4px 10px;font-size:11px" onclick="meetingToTask('${m.id}')">+ Follow-up</button>` : ''}
+      <button class="sync-btn" style="padding:4px 10px;font-size:11px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE" onclick="openEditModal('${m.id}')">✏️ Edit</button>
+      <button class="sync-btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteItem('${m.id}')">🗑</button>
+    </div>
+  </div>`;
+};
+
 const renderMeetingsTab = () => {
+  const view = S.meetingView || 'upcoming';
   const span = S.meetingDaySpan || 3;
   const baseDate = addDays(today(), S.meetingOffset);
   const dates = Array.from({length: span}, (_, i) => addDays(baseDate, i));
@@ -902,16 +942,12 @@ const renderMeetingsTab = () => {
   const todayStr = today();
 
   let html = `
-    <div class="view-toggles">
-      <button class="view-btn ${span===3?'active':''}" onclick="setMeetingSpan(3)">3 Days</button>
-      <button class="view-btn ${span===5?'active':''}" onclick="setMeetingSpan(5)">5 Days</button>
-      <button class="view-btn ${span===7?'active':''}" onclick="setMeetingSpan(7)">7 Days</button>
-    </div>
-    <div class="date-nav" style="gap:4px">
-      <button class="date-nav-btn" onclick="shiftMeetings(${-span})">← Prev</button>
-      <span class="date-nav-label" style="font-size:12px">📅 ${rangeLabel}</span>
-      <button class="date-nav-btn" onclick="S.meetingOffset=0;render()" style="font-size:11px">Today</button>
-      <button class="date-nav-btn" onclick="shiftMeetings(${span})">Next →</button>
+    <div class="view-toggles" style="justify-content:space-between;align-items:center">
+      <div style="display:flex;gap:6px">
+        <button class="view-btn ${view==='upcoming'?'active':''}" onclick="setMeetingView('upcoming')">📅 Upcoming</button>
+        <button class="view-btn ${view==='past'?'active':''}" onclick="setMeetingView('past')">📋 Past</button>
+      </div>
+      <button onclick="exportMeetingNotes()" style="flex-shrink:0;padding:5px 10px;border-radius:8px;border:1px solid #BBF7D0;background:#F0FDF4;color:#059669;font-size:11px;font-weight:600;cursor:pointer">⬇️ Export CSV</button>
     </div>`;
 
   if (!S.gcalToken) {
@@ -919,69 +955,105 @@ const renderMeetingsTab = () => {
     <button class="sync-btn primary" style="margin-top:12px" onclick="gcalAuth()">Connect GCal</button></div>`;
     return html;
   }
-  if (S.syncing) {
-    html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading meetings...</p></div>`;
-    return html;
-  }
 
-  dates.forEach(d => {
-    const dt = new Date(d + 'T00:00:00');
-    const isToday = d === todayStr;
-    const dayMeetings = S.meetings
-      .filter(m => m.dueDate === d)
-      .sort((a,b) => (a.startTime||'00:00').localeCompare(b.startTime||'00:00'));
+  // ── UPCOMING VIEW ─────────────────────────────
+  if (view === 'upcoming') {
+    html += `
+      <div class="view-toggles" style="padding-top:0">
+        <button class="view-btn ${span===3?'active':''}" onclick="setMeetingSpan(3)">3 Days</button>
+        <button class="view-btn ${span===5?'active':''}" onclick="setMeetingSpan(5)">5 Days</button>
+        <button class="view-btn ${span===7?'active':''}" onclick="setMeetingSpan(7)">7 Days</button>
+      </div>
+      <div class="date-nav" style="gap:4px">
+        <button class="date-nav-btn" onclick="shiftMeetings(${-span})">← Prev</button>
+        <span class="date-nav-label" style="font-size:12px">📅 ${rangeLabel}</span>
+        <button class="date-nav-btn" onclick="S.meetingOffset=0;render()" style="font-size:11px">Today</button>
+        <button class="date-nav-btn" onclick="shiftMeetings(${span})">Next →</button>
+      </div>`;
 
-    html += `<div class="week-day-header ${isToday?'week-day-today':''}">
-      <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
-      <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}</span>
-      ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
-    </div>`;
+    if (S.syncing) {
+      html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading meetings...</p></div>`;
+      return html;
+    }
 
-    if (dayMeetings.length === 0) {
-      html += `<div style="margin:4px 16px 8px;padding:8px 12px;background:#F0FDF4;border:1px dashed #86EFAC;border-radius:8px;font-size:12px;color:#059669">✅ No meetings — day is free</div>`;
-    } else {
-      // Free time before first meeting
-      const firstStart = dayMeetings[0].startTime;
-      if (firstStart && firstStart > '08:00') {
-        const freeMins = timeToMins(firstStart) - timeToMins('08:00');
-        html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 Free until ${firstStart} · ${durLabel(freeMins)} available</div>`;
-      }
+    dates.forEach(d => {
+      const dt = new Date(d + 'T00:00:00');
+      const isToday = d === todayStr;
+      const dayMeetings = S.meetings
+        .filter(m => m.dueDate === d)
+        .sort((a,b) => (a.startTime||'00:00').localeCompare(b.startTime||'00:00'));
 
-      dayMeetings.forEach((m, idx) => {
-        html += `<div class="meeting-card">
-          <div class="meeting-title">${esc(m.title)}</div>
-          <div class="meeting-meta">
-            ${m.startTime ? `<span class="meeting-time">🕐 ${m.startTime}${m.endTime?' – '+m.endTime:''}</span>` : '<span class="meeting-time">All day</span>'}
-            ${m.location ? `<span class="meeting-loc">📍 ${esc(m.location)}</span>` : ''}
-          </div>
-          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-            <button class="sync-btn success" style="padding:4px 10px;font-size:11px" onclick="meetingToTask('${m.id}')">+ Follow-up</button>
-            <button class="sync-btn" style="padding:4px 10px;font-size:11px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE" onclick="openEditModal('${m.id}')">✏️ Edit</button>
-            <button class="sync-btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteItem('${m.id}')">🗑</button>
-          </div>
-        </div>`;
+      html += `<div class="week-day-header ${isToday?'week-day-today':''}">
+        <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
+        <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}</span>
+        ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
+      </div>`;
 
-        // Free gap between meetings
-        if (idx < dayMeetings.length - 1) {
-          const thisEnd = m.endTime;
-          const nextStart = dayMeetings[idx+1].startTime;
-          if (thisEnd && nextStart && nextStart > thisEnd) {
-            const gapMins = timeToMins(nextStart) - timeToMins(thisEnd);
-            if (gapMins >= 15) {
-              html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${thisEnd} – ${nextStart}</div>`;
+      if (dayMeetings.length === 0) {
+        html += `<div style="margin:4px 16px 8px;padding:8px 12px;background:#F0FDF4;border:1px dashed #86EFAC;border-radius:8px;font-size:12px;color:#059669">✅ No meetings — day is free</div>`;
+      } else {
+        const firstStart = dayMeetings[0].startTime;
+        if (firstStart && firstStart > '08:00') {
+          const freeMins = timeToMins(firstStart) - timeToMins('08:00');
+          html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 Free until ${firstStart} · ${durLabel(freeMins)} available</div>`;
+        }
+        dayMeetings.forEach((m, idx) => {
+          html += renderMeetingCard(m, false);
+          if (idx < dayMeetings.length - 1) {
+            const thisEnd = m.endTime;
+            const nextStart = dayMeetings[idx+1].startTime;
+            if (thisEnd && nextStart && nextStart > thisEnd) {
+              const gapMins = timeToMins(nextStart) - timeToMins(thisEnd);
+              if (gapMins >= 15) {
+                html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${thisEnd} – ${nextStart}</div>`;
+              }
             }
           }
+        });
+        const lastEnd = dayMeetings[dayMeetings.length-1].endTime;
+        if (lastEnd && lastEnd < '18:00') {
+          const freeMins = timeToMins('18:00') - timeToMins(lastEnd);
+          html += `<div style="margin:2px 16px 8px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 Free after ${lastEnd} · ${durLabel(freeMins)} until 18:00</div>`;
         }
-      });
-
-      // Free time after last meeting
-      const lastEnd = dayMeetings[dayMeetings.length-1].endTime;
-      if (lastEnd && lastEnd < '18:00') {
-        const freeMins = timeToMins('18:00') - timeToMins(lastEnd);
-        html += `<div style="margin:2px 16px 8px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 Free after ${lastEnd} · ${durLabel(freeMins)} until 18:00</div>`;
       }
+    });
+
+  // ── PAST VIEW ─────────────────────────────────
+  } else {
+    if (S.syncing) {
+      html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading past meetings...</p></div>`;
+      return html;
     }
-  });
+    if (!S.pastMeetingsLoaded) {
+      html += `<div class="empty-state" style="padding:30px 20px">
+        <div class="es-icon">📋</div>
+        <p style="margin-bottom:4px">View your last 30 days of meetings</p>
+        <p style="font-size:12px;color:#94A3B8">Add notes and export as CSV for follow-up</p>
+        <button class="sync-btn primary" style="margin-top:14px" onclick="fetchPastMeetings()">📥 Load Past Meetings</button>
+      </div>`;
+    } else if (!S.pastMeetings || S.pastMeetings.length === 0) {
+      html += `<div class="empty-state"><div class="es-icon">📭</div><p>No meetings found in the last 30 days.</p></div>`;
+    } else {
+      const byDate = {};
+      S.pastMeetings.forEach(m => {
+        const d = m.dueDate || '__none__';
+        if (!byDate[d]) byDate[d] = [];
+        byDate[d].push(m);
+      });
+      html += `<div style="padding:8px 16px 4px;font-size:12px;color:#94A3B8;font-weight:600">${S.pastMeetings.length} meetings in last 30 days</div>`;
+      Object.keys(byDate).sort().reverse().forEach(d => {
+        if (d === '__none__') return;
+        const dt = new Date(d + 'T00:00:00');
+        html += `<div class="week-day-header">
+          <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
+          <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]} ${dt.getFullYear()}</span>
+        </div>`;
+        byDate[d]
+          .sort((a,b) => (a.startTime||'00:00').localeCompare(b.startTime||'00:00'))
+          .forEach(m => { html += renderMeetingCard(m, true); });
+      });
+    }
+  }
 
   return html;
 };
@@ -1438,32 +1510,28 @@ const toggleProject = name => {
 };
 const closeModal = () => { S.modal = null; S.editItem = null; render(); };
 const closeModalIfBg = e => { if (e.target.classList.contains('modal-overlay')) closeModal(); };
-const updateEdit = (key, val) => {
-  if (!S.editItem) return;
-  S.editItem[key] = val;
-  // For chip fields: refresh visuals without full re-render (keeps keyboard open)
-  refreshChips(key);
-};
-const setMeetingSpan = n => { S.meetingDaySpan = n; S.meetingOffset = 0; render(); };
-const shiftWeek = n => { S.weekOffset = (S.weekOffset||0) + n; render(); };
+const updateEdit = (key, val) => { if (S.editItem) { S.editItem[key] = val; render(); } };
 const disconnectGcal = () => {
   if (!confirm('Disconnect Google Calendar?')) return;
   S.gcalToken = null; S.meetings = [];
   localStorage.removeItem(TOKEN_KEY);
   render(); showToast('Disconnected from GCal');
 };
+
 const meetingToTask = meetingId => {
-  const m = S.meetings.find(i => i.id === meetingId);
+  const m = S.meetings.find(i => i.id === meetingId) || (S.pastMeetings||[]).find(i => i.id === meetingId);
   if (!m) return;
   openEditModal(null);
   if (S.editItem) {
     S.editItem.title = 'Follow-up: ' + m.title;
-    S.editItem.dueDate = m.dueDate;
+    S.editItem.dueDate = today();
     S.editItem.type = 'task';
     S.editItem.energyTag = 'client';
+    if (m.project) S.editItem.project = m.project;
     render();
   }
 };
+
 const copyScript = () => {
   const txt = document.getElementById('tg-script');
   if (!txt) return;
@@ -1486,6 +1554,89 @@ const clearData = () => {
 };
 
 // ═══════════════════════════════════════════════
+// OPTION A — MEETING NOTES, PAST VIEW, CSV EXPORT
+// ═══════════════════════════════════════════════
+const toggleMeetingNotes = id => {
+  S.expandedMeetingId = S.expandedMeetingId === id ? null : id;
+  render();
+};
+
+const saveMeetingNotes = async id => {
+  const el = document.getElementById('meeting-notes-' + id);
+  if (!el) return;
+  const notes = el.value;
+  let m = S.meetings.find(i => i.id === id);
+  if (!m) m = (S.pastMeetings || []).find(i => i.id === id);
+  if (!m) return;
+  m.notes = notes;
+  S.expandedMeetingId = null;
+  saveData();
+  if (S.gcalToken && m.gcalId) {
+    try { await gcalUpdateEvent(m); showToast('📝 Notes saved to GCal'); }
+    catch(e) { showToast('📝 Notes saved locally'); }
+  } else {
+    showToast('📝 Notes saved');
+  }
+  render();
+};
+
+const setMeetingView = v => {
+  S.meetingView = v;
+  render();
+};
+
+const fetchPastMeetings = async () => {
+  if (!S.gcalToken) { showToast('Connect GCal first'); return; }
+  showToast('Loading past meetings…');
+  try {
+    const now = new Date();
+    const past30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const timeMin = past30.toISOString();
+    const timeMax = now.toISOString();
+    const params = new URLSearchParams({
+      calendarId: 'primary', timeMin, timeMax,
+      maxResults: '150', singleEvents: 'true', orderBy: 'startTime'
+    });
+    const data = await gcalFetch('/calendars/primary/events?' + params);
+    const taskGcalIds = new Set(S.items.filter(i => i.gcalId).map(i => i.gcalId));
+    const past = (data.items || [])
+      .filter(ev => ev.summary && ev.summary !== BACKUP_TITLE)
+      .filter(ev => !taskGcalIds.has(ev.id))
+      .map(ev => gcalEventToItem(ev));
+    S.pastMeetings = past;
+    S.pastMeetingsLoaded = true;
+    showToast(`📋 Loaded ${past.length} past meetings`);
+    render();
+  } catch(e) {
+    showToast('⚠️ Failed to load past meetings');
+    console.error(e);
+  }
+};
+
+const exportMeetingNotes = () => {
+  const all = [...(S.meetings || []), ...(S.pastMeetings || [])];
+  if (all.length === 0) { showToast('No meetings to export'); return; }
+  all.sort((a, b) => (b.dueDate||'') < (a.dueDate||'') ? -1 : 1);
+  const esc2 = v => '"' + String(v||'').replace(/"/g,'""') + '"';
+  const dayName = d => { if (!d) return ''; const dt = new Date(d+'T00:00:00'); return DAYS_SHORT[dt.getDay()]; };
+  const rows = [['Date','Day','Title','Start','End','Location','Project','Notes']];
+  for (const m of all) {
+    rows.push([
+      m.dueDate||'', dayName(m.dueDate), m.title||'',
+      m.startTime||'', m.endTime||'', m.location||'',
+      m.project||'', m.notes||''
+    ]);
+  }
+  const csv = '﻿' + rows.map(r => r.map(esc2).join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'meeting_notes_' + today() + '.csv';
+  a.click();
+  showToast('⬇️ CSV exported!');
+};
+
+// ═══════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════
 window.addEventListener('load', () => {
@@ -1497,14 +1648,7 @@ window.addEventListener('load', () => {
       clearInterval(waitForGoogle);
       initGcal();
       // Auto-sync if already have token
-      if (S.gcalToken) {
-        // If local data is empty, try restoring from GCal backup first
-        if (S.items.length === 0) {
-          restoreFromGcal(true).then(() => syncFromGcal());
-        } else {
-          syncFromGcal();
-        }
-      }
+      if (S.gcalToken) syncFromGcal();
     }
   }, 200);
   // Register service worker for PWA (optional)
