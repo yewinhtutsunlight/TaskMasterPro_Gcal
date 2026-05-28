@@ -465,12 +465,14 @@ const syncFromGcal = async () => {
   if (!S.gcalToken) return;
   S.syncing = true; render();
   try {
-    const timeMin = new Date().toISOString();
+    // Look back 30 days so overdue tasks with past dates are still fetched
+    const tMin = new Date(); tMin.setDate(tMin.getDate() - 30);
+    const timeMin = tMin.toISOString();
     const tMax = new Date(); tMax.setDate(tMax.getDate() + 14);
     const timeMax = tMax.toISOString();
     const params = new URLSearchParams({
       calendarId: 'primary', singleEvents: 'true',
-      orderBy: 'startTime', timeMin, timeMax, maxResults: '100'
+      orderBy: 'startTime', timeMin, timeMax, maxResults: '200'
     });
     const data = await gcalFetch('/calendars/primary/events?' + params);
     const events = data.items || [];
