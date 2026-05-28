@@ -359,7 +359,12 @@ const initGcal = () => {
       S.gcalUser = S.gcalUser || '';
       localStorage.setItem(TOKEN_KEY, JSON.stringify(res));
       render();
-      syncFromGcal();
+      // If no local data (e.g. fresh PWA install on iOS), auto-restore from backup first
+      if (S.items.length === 0) {
+        restoreFromGcal(true).then(() => syncFromGcal()).catch(() => syncFromGcal());
+      } else {
+        syncFromGcal();
+      }
     }
   });
 };
@@ -1647,8 +1652,14 @@ window.addEventListener('load', () => {
     if (window.google && window.google.accounts) {
       clearInterval(waitForGoogle);
       initGcal();
-      // Auto-sync if already have token
-      if (S.gcalToken) syncFromGcal();
+      // Auto-sync if already have token; restore backup first if no local data
+      if (S.gcalToken) {
+        if (S.items.length === 0) {
+          restoreFromGcal(true).then(() => syncFromGcal()).catch(() => syncFromGcal());
+        } else {
+          syncFromGcal();
+        }
+      }
     }
   }, 200);
   // Register service worker for PWA (optional)
