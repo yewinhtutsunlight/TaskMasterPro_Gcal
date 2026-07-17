@@ -159,9 +159,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <script>
 'use strict';
 
-// ═══════════════════════════════════════════════
-// CONFIG — copy GCAL_CLIENT_ID from your existing index.html
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// CONFIG â copy GCAL_CLIENT_ID from your existing index.html
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const GCAL_CLIENT_ID = '859742900088-8d3lfkantkgcsp23m1o06u52c02o2a5q.apps.googleusercontent.com';
 const GCAL_SCOPE     = 'https://www.googleapis.com/auth/calendar';
 const GCAL_BASE      = 'https://www.googleapis.com/calendar/v3';
@@ -170,9 +170,9 @@ const TOKEN_KEY      = 'taskmaster_gcal_token';
 const DELETED_KEY    = 'taskmaster_deleted';
 const SNOOZED_KEY    = 'taskmaster_snoozed';
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // CONSTANTS
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const PRIORITY = {
   high:   {label:'HIGH', color:'#DC2626', bg:'#FEF2F2', border:'#FECACA'},
   medium: {label:'MED',  color:'#D97706', bg:'#FFFBEB', border:'#FDE68A'},
@@ -180,30 +180,30 @@ const PRIORITY = {
 };
 
 const ENERGY_TAGS = [
-  {value:'deep_work',   label:'🧠 Deep Work',   color:'#7C3AED', bg:'#F5F3FF'},
-  {value:'quick_admin', label:'⚡ Quick Admin',  color:'#D97706', bg:'#FFFBEB'},
-  {value:'planning',    label:'📋 Planning',     color:'#1D4ED8', bg:'#EFF6FF'},
-  {value:'client',      label:'🤝 Client',       color:'#059669', bg:'#F0FDF4'},
-  {value:'site_visit',  label:'🏗 Site Visit',   color:'#DC2626', bg:'#FEF2F2'}
+  {value:'deep_work',   label:'ð§  Deep Work',   color:'#7C3AED', bg:'#F5F3FF'},
+  {value:'quick_admin', label:'â¡ Quick Admin',  color:'#D97706', bg:'#FFFBEB'},
+  {value:'planning',    label:'ð Planning',     color:'#1D4ED8', bg:'#EFF6FF'},
+  {value:'client',      label:'ð¤ Client',       color:'#059669', bg:'#F0FDF4'},
+  {value:'site_visit',  label:'ð Site Visit',   color:'#DC2626', bg:'#FEF2F2'}
 ];
 
 const PROJECT_STAGES = [
-  {value:'survey',        label:'📐 Survey'},
-  {value:'design',        label:'✏️ Design'},
-  {value:'build',         label:'🔧 Panel Build'},
-  {value:'fat',           label:'🔬 Testing/FAT'},
-  {value:'installation',  label:'🏗 Installation'},
-  {value:'commissioning', label:'⚡ Commissioning'},
-  {value:'handover',      label:'✅ Handover'}
+  {value:'survey',        label:'ð Survey'},
+  {value:'design',        label:'âï¸ Design'},
+  {value:'build',         label:'ð§ Panel Build'},
+  {value:'fat',           label:'ð¬ Testing/FAT'},
+  {value:'installation',  label:'ð Installation'},
+  {value:'commissioning', label:'â¡ Commissioning'},
+  {value:'handover',      label:'â Handover'}
 ];
 
 const ALARM_MINUTES = [5,10,15,30,60,120,1440];
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // STATE
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 let S = {
   items:        [],
   deleted:      [],
@@ -223,16 +223,16 @@ let S = {
   showCompleted:false,
   meetingOffset:0,         // days offset for meetings view
   meetingDaySpan:3,        // 3 | 5 | 7
-  meetingView:'upcoming',  // 'upcoming' | 'past'
+  meetingView:'list',  // 'upcoming' | 'past'
   pastMeetings:[],         // last 30 days meetings fetched on demand
   pastMeetingsLoaded:false,
   expandedMeetingId:null,  // id of meeting with notes open
   expandedProjects: {},
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // UTILITIES
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const fmt = d => {
   if (!d) return '';
   const dt = typeof d === 'string' ? new Date(d + (d.length===10?'T00:00:00':'')) : d;
@@ -284,9 +284,9 @@ const showToast = msg => {
   setTimeout(() => t.classList.remove('show'), 2500);
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // STORAGE
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const loadData = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -312,9 +312,9 @@ const saveData = () => {
   } catch(e) { console.error('saveData:', e); }
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // COMPUTED
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const getTasks = () => S.items.filter(i => i.type === 'task');
 const getOverdueItems = () => getTasks().filter(isOverdue);
 const getTodayItems  = () => getTasks().filter(isDueToday);
@@ -344,9 +344,9 @@ const applyFilters = items => {
   return out;
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // GCAL AUTH
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 let tokenClient = null;
 const initGcal = () => {
   if (!window.google || !GCAL_CLIENT_ID || GCAL_CLIENT_ID === 'YOUR_GCAL_CLIENT_ID_HERE') return;
@@ -370,7 +370,7 @@ const initGcal = () => {
 };
 
 const gcalAuth = () => {
-  if (!tokenClient) { showToast('⚠️ GCal not configured'); return; }
+  if (!tokenClient) { showToast('â ï¸ GCal not configured'); return; }
   tokenClient.requestAccessToken({prompt:''});
 };
 
@@ -389,11 +389,11 @@ const gcalFetch = async (path, opts={}) => {
   return res.status === 204 ? null : res.json();
 };
 
-// ═══════════════════════════════════════════════
-// GCAL SYNC — fetch next 14 days only (fixes freeze)
-// ═══════════════════════════════════════════════
-// ─── Metadata helpers: embed task fields inside GCal event description ───────
-// This is what enables true cross-device sync — all metadata lives in GCal
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// GCAL SYNC â fetch next 14 days only (fixes freeze)
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// âââ Metadata helpers: embed task fields inside GCal event description âââââââ
+// This is what enables true cross-device sync â all metadata lives in GCal
 const TM_TAG = '<!-- TM:';
 const TM_END = ' -->';
 
@@ -425,7 +425,7 @@ const buildGcalDescription = item => {
   const notes = item.notes || '';
   return notes + (notes ? '\n\n' : '') + TM_TAG + JSON.stringify(meta) + TM_END;
 };
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 const gcalEventToItem = ev => {
   const meta = parseTmMeta(ev.description);
@@ -490,7 +490,7 @@ const syncFromGcal = async () => {
       const existIdx = S.items.findIndex(i => i.gcalId === ev.id);
       const newItem = gcalEventToItem(ev);
       if (existIdx >= 0) {
-        // Preserve user-edited fields — critically preserve id and type so tasks stay as tasks
+        // Preserve user-edited fields â critically preserve id and type so tasks stay as tasks
         const existing = S.items[existIdx];
         S.items[existIdx] = {
           ...newItem,
@@ -509,16 +509,16 @@ const syncFromGcal = async () => {
         S.items.push(newItem);
       }
     });
-    // Build meetings list — exclude items the user has saved as tasks (type:'task')
+    // Build meetings list â exclude items the user has saved as tasks (type:'task')
     const userTaskGcalIds = new Set(S.items.filter(i => i.type === 'task' && i.gcalId).map(i => i.gcalId));
     S.meetings = events.filter(ev => !userTaskGcalIds.has(ev.id)).map(gcalEventToItem);
     saveData();
     scheduleGcalBackup();
     S.syncing = false; render();
-    showToast('✅ Synced with Google Calendar');
+    showToast('â Synced with Google Calendar');
   } catch(e) {
     S.syncing = false; render();
-    showToast('⚠️ Sync error: ' + e.message);
+    showToast('â ï¸ Sync error: ' + e.message);
   }
 };
 
@@ -560,9 +560,9 @@ const gcalDeleteEvent = async gcalId => {
   await gcalFetch('/calendars/primary/events/' + gcalId, {method:'DELETE'});
 };
 
-// ═══════════════════════════════════════════════
-// GCAL CLOUD BACKUP — transparent cross-device sync
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// GCAL CLOUD BACKUP â transparent cross-device sync
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const BACKUP_TITLE = '__TaskMasterPro_Backup__';
 let _backupTimer = null;
 
@@ -600,7 +600,7 @@ const saveToGcal = async () => {
 
 const restoreFromGcal = async (silent = false) => {
   if (!S.gcalToken) { if (!silent) showToast('Connect GCal first'); return; }
-  if (!silent) showToast('🔍 Looking for backup...');
+  if (!silent) showToast('ð Looking for backup...');
   try {
     // Wide time range so the 2000-01-01 backup event is always included
     const search = new URLSearchParams({
@@ -612,7 +612,7 @@ const restoreFromGcal = async (silent = false) => {
     const existing = (result.items || []).find(e => e.summary === BACKUP_TITLE);
     const desc = (existing?.description || '').trim();
     if (!desc) { if (!silent) showToast('No GCal backup found'); return; }
-    // Robust decode — handles both old (escape/unescape) and new (encodeURIComponent) encoding
+    // Robust decode â handles both old (escape/unescape) and new (encodeURIComponent) encoding
     let jsonStr;
     try { jsonStr = decodeURIComponent(atob(desc)); }
     catch(e) { try { jsonStr = decodeURIComponent(escape(atob(desc))); } catch(e2) { jsonStr = atob(desc); } }
@@ -627,15 +627,15 @@ const restoreFromGcal = async (silent = false) => {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({items: S.items})); // save without triggering another backup
       localStorage.setItem(DELETED_KEY, JSON.stringify(S.deleted));
       render();
-      if (!silent) showToast('✅ Restored ' + payload.items.length + ' tasks from GCal');
-      else showToast('☁️ Data restored from GCal backup (' + payload.items.length + ' tasks)');
+      if (!silent) showToast('â Restored ' + payload.items.length + ' tasks from GCal');
+      else showToast('âï¸ Data restored from GCal backup (' + payload.items.length + ' tasks)');
     }
-  } catch(e) { if (!silent) showToast('⚠️ Restore failed: ' + e.message); }
+  } catch(e) { if (!silent) showToast('â ï¸ Restore failed: ' + e.message); }
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // ACTIONS
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const toggleDone = id => {
   const item = S.items.find(i => i.id === id);
   if (!item) return;
@@ -643,7 +643,7 @@ const toggleDone = id => {
   saveData();
   if (item.gcalId && item.done) gcalDeleteEvent(item.gcalId).catch(()=>{});
   render();
-  showToast(item.done ? '✅ Completed!' : '↩️ Reopened');
+  showToast(item.done ? 'â Completed!' : 'â©ï¸ Reopened');
 };
 
 const deleteItem = id => {
@@ -657,7 +657,7 @@ const deleteItem = id => {
   }
   saveData();
   render();
-  showToast('🗑 Deleted');
+  showToast('ð Deleted');
 };
 
 const openEditModal = id => {
@@ -675,7 +675,7 @@ const openEditModal = id => {
 
 const saveItem = async () => {
   const item = S.editItem;
-  if (!item || !item.title.trim()) { showToast('⚠️ Title is required'); return; }
+  if (!item || !item.title.trim()) { showToast('â ï¸ Title is required'); return; }
   const idx = S.items.findIndex(i => i.id === item.id);
   const isNew = idx < 0;
   if (isNew) { S.items.push(item); } else { S.items[idx] = item; }
@@ -701,9 +701,9 @@ const saveItem = async () => {
         if (savedIdx >= 0) S.items[savedIdx] = {...item};
         saveData();
       }
-      showToast('✅ Saved & synced to GCal');
-    } catch(e) { showToast('💾 Saved locally (GCal: ' + e.message + ')'); }
-  } else { showToast('💾 Saved locally'); }
+      showToast('â Saved & synced to GCal');
+    } catch(e) { showToast('ð¾ Saved locally (GCal: ' + e.message + ')'); }
+  } else { showToast('ð¾ Saved locally'); }
 };
 
 const toggleAI = (itemId, aiId) => {
@@ -725,9 +725,9 @@ const removeActionItem = aiId => {
   render();
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // RENDER HELPERS
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 const renderTaskCard = item => {
@@ -735,7 +735,7 @@ const renderTaskCard = item => {
   const od = isOverdue(item);
   const et = ENERGY_TAGS.find(t => t.value === item.energyTag);
   const ps = PROJECT_STAGES.find(s => s.value === item.projectStage);
-  const doneChk = item.done ? '✓' : '';
+  const doneChk = item.done ? 'â' : '';
   const aiDone = item.actionItems.filter(a=>a.done).length;
   const aiTotal = item.actionItems.length;
 
@@ -746,10 +746,10 @@ const renderTaskCard = item => {
       <div class="task-meta">
         ${item.dueDate ? `<span class="meta-chip meta-date ${od?'overdue':''}">${fmt(item.dueDate)}${item.dueTime?' '+item.dueTime:''}</span>` : ''}
         <span class="meta-chip meta-priority" style="background:${p.color}">${p.label}</span>
-        ${item.estimatedMins ? `<span class="meta-chip meta-date">⏱ ${durLabel(item.estimatedMins)}</span>` : ''}
+        ${item.estimatedMins ? `<span class="meta-chip meta-date">â± ${durLabel(item.estimatedMins)}</span>` : ''}
         ${item.gcalId ? '<span class="meta-chip meta-gcal">GCal</span>' : ''}
-        ${item.project ? `<span class="meta-chip meta-project">📁 ${esc(item.project)}</span>` : ''}
-        ${item.assignee ? `<span class="meta-chip meta-assignee">👤 ${esc(item.assignee)}</span>` : ''}
+        ${item.project ? `<span class="meta-chip meta-project">ð ${esc(item.project)}</span>` : ''}
+        ${item.assignee ? `<span class="meta-chip meta-assignee">ð¤ ${esc(item.assignee)}</span>` : ''}
         ${et ? `<span class="meta-chip meta-energy" style="background:${et.bg};color:${et.color}">${et.label}</span>` : ''}
         ${ps ? `<span class="meta-chip meta-stage">${ps.label}</span>` : ''}
       </div>
@@ -757,15 +757,15 @@ const renderTaskCard = item => {
       <div style="font-size:10px;color:#94A3B8;margin-top:2px">${aiDone}/${aiTotal} action items</div>` : ''}
     </div>
     <div class="task-actions">
-      <button class="icon-btn" onclick="openEditModal('${item.id}')" title="Edit">✏️</button>
-      <button class="icon-btn" onclick="deleteItem('${item.id}')" title="Delete">🗑</button>
+      <button class="icon-btn" onclick="openEditModal('${item.id}')" title="Edit">âï¸</button>
+      <button class="icon-btn" onclick="deleteItem('${item.id}')" title="Delete">ð</button>
     </div>
   </div>`;
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // RENDER TABS
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const renderTasksTab = () => {
   const wo = S.weekOffset || 0;
   const overdue = applyFilters(getOverdueItems());
@@ -777,10 +777,10 @@ const renderTasksTab = () => {
 
   const viewToggle = `
     <div class="view-toggles">
-      <button class="view-btn ${S.viewMode==='today'?'active':''}" onclick="setView('today')">📅 Today</button>
-      <button class="view-btn ${S.viewMode==='week'?'active':''}" onclick="setView('week')">🗓 Week</button>
-      <button class="view-btn ${S.viewMode==='project'?'active':''}" onclick="setView('project')">📁 Project</button>
-      <button class="view-btn ${S.viewMode==='all'?'active':''}" onclick="setView('all')">📋 All</button>
+      <button class="view-btn ${S.viewMode==='today'?'active':''}" onclick="setView('today')">ð Today</button>
+      <button class="view-btn ${S.viewMode==='week'?'active':''}" onclick="setView('week')">ð Week</button>
+      <button class="view-btn ${S.viewMode==='project'?'active':''}" onclick="setView('project')">ð Project</button>
+      <button class="view-btn ${S.viewMode==='all'?'active':''}" onclick="setView('all')">ð All</button>
     </div>`;
 
   const energyFilters = `
@@ -791,37 +791,37 @@ const renderTasksTab = () => {
 
   let content = '';
 
-  // OVERDUE BANNER — only show warning, never "enjoy" if overdue
+  // OVERDUE BANNER â only show warning, never "enjoy" if overdue
   const allOverdue = getOverdueItems();
   if (allOverdue.length > 0) {
-    content += `<div class="overdue-banner">⚠️ ${allOverdue.length} overdue task${allOverdue.length>1?'s':''} need attention</div>`;
+    content += `<div class="overdue-banner">â ï¸ ${allOverdue.length} overdue task${allOverdue.length>1?'s':''} need attention</div>`;
   }
 
   if (S.viewMode === 'today') {
     if (overdue.length > 0) {
-      content += `<div class="section-header danger">⚠ Overdue · ${overdue.length}</div>`;
+      content += `<div class="section-header danger">â  Overdue Â· ${overdue.length}</div>`;
       content += overdue.map(renderTaskCard).join('');
     }
-    content += `<div class="section-header">${DAYS_SHORT[new Date().getDay()]} · Today</div>`;
+    content += `<div class="section-header">${DAYS_SHORT[new Date().getDay()]} Â· Today</div>`;
     if (todayItems.length === 0 && overdue.length === 0) {
-      content += `<div class="empty-state"><div class="es-icon">🎉</div><p>No tasks today — enjoy!</p></div>`;
+      content += `<div class="empty-state"><div class="es-icon">ð</div><p>No tasks today â enjoy!</p></div>`;
     } else if (todayItems.length === 0) {
       content += `<div class="empty-state" style="padding:16px"><p style="font-size:13px;color:#94A3B8">No tasks scheduled for today.</p></div>`;
     } else {
       content += todayItems.map(renderTaskCard).join('');
     }
-    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
+    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>ï¼</span> Add task...</div>`;
 
   } else if (S.viewMode === 'week') {
-    const weekLabel = `${fmt(weekDates[0])} – ${fmt(weekDates[6])}`;
+    const weekLabel = `${fmt(weekDates[0])} â ${fmt(weekDates[6])}`;
     content += `<div class="date-nav" style="gap:4px">
-      <button class="date-nav-btn" onclick="shiftWeek(-1)">← Prev</button>
-      <span class="date-nav-label" style="font-size:12px">🗓 ${weekLabel}</span>
+      <button class="date-nav-btn" onclick="shiftWeek(-1)">â Prev</button>
+      <span class="date-nav-label" style="font-size:12px">ð ${weekLabel}</span>
       <button class="date-nav-btn" onclick="S.weekOffset=0;render()" style="font-size:11px">Today</button>
-      <button class="date-nav-btn" onclick="shiftWeek(1)">Next →</button>
+      <button class="date-nav-btn" onclick="shiftWeek(1)">Next â</button>
     </div>`;
     if (overdue.length > 0 && wo === 0) {
-      content += `<div class="section-header danger">⚠ Overdue · ${overdue.length}</div>`;
+      content += `<div class="section-header danger">â  Overdue Â· ${overdue.length}</div>`;
       content += overdue.map(renderTaskCard).join('');
     }
     weekDates.forEach(d => {
@@ -839,16 +839,16 @@ const renderTasksTab = () => {
         content += dayTasks.map(renderTaskCard).join('');
       }
     });
-    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
+    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>ï¼</span> Add task...</div>`;
 
   } else if (S.viewMode === 'project') {
     if (overdue.length > 0) {
-      content += `<div class="section-header danger">⚠ Overdue · ${overdue.length}</div>`;
+      content += `<div class="section-header danger">â  Overdue Â· ${overdue.length}</div>`;
       content += overdue.map(renderTaskCard).join('');
     }
     const unassigned = applyFilters(getTasks().filter(i => !i.done && !i.project));
     if (projects.length === 0 && unassigned.length === 0) {
-      content += `<div class="empty-state"><div class="es-icon">📁</div><p>No projects yet.<br>Add a Project name when creating tasks.</p></div>`;
+      content += `<div class="empty-state"><div class="es-icon">ð</div><p>No projects yet.<br>Add a Project name when creating tasks.</p></div>`;
     }
     projects.forEach(proj => {
       const projTasks = applyFilters(getTasks().filter(i => !i.done && i.project === proj));
@@ -857,35 +857,35 @@ const renderTasksTab = () => {
       content += `<div class="project-group">
         <div class="project-group-header" onclick="toggleProject('${esc(proj)}')">
           <div>
-            <div class="project-group-title">📁 ${esc(proj)}</div>
-            <div class="project-group-meta">${projTasks.length} pending · ${projDone.length} done</div>
+            <div class="project-group-title">ð ${esc(proj)}</div>
+            <div class="project-group-meta">${projTasks.length} pending Â· ${projDone.length} done</div>
           </div>
-          <span>${expanded?'▲':'▼'}</span>
+          <span>${expanded?'â²':'â¼'}</span>
         </div>
-        ${expanded ? `<div class="project-group-tasks">${projTasks.length>0 ? projTasks.map(renderTaskCard).join('') : '<div style="padding:10px 14px;font-size:13px;color:#94A3B8">All tasks done ✓</div>'}</div>` : ''}
+        ${expanded ? `<div class="project-group-tasks">${projTasks.length>0 ? projTasks.map(renderTaskCard).join('') : '<div style="padding:10px 14px;font-size:13px;color:#94A3B8">All tasks done â</div>'}</div>` : ''}
       </div>`;
     });
     if (unassigned.length > 0) {
-      content += `<div class="section-header">📋 Unassigned</div>`;
+      content += `<div class="section-header">ð Unassigned</div>`;
       content += unassigned.map(renderTaskCard).join('');
     }
-    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
+    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>ï¼</span> Add task...</div>`;
 
   } else if (S.viewMode === 'all') {
     if (overdue.length > 0) {
-      content += `<div class="section-header danger">⚠ Overdue · ${overdue.length}</div>`;
+      content += `<div class="section-header danger">â  Overdue Â· ${overdue.length}</div>`;
       content += overdue.map(renderTaskCard).join('');
     }
     const allUndone = applyFilters(getTasks().filter(i => !i.done && !isOverdue(i)))
       .sort((a,b) => (a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
     if (allUndone.length === 0 && overdue.length === 0) {
-      content += `<div class="empty-state"><div class="es-icon">🎉</div><p>All clear — no tasks!</p></div>`;
+      content += `<div class="empty-state"><div class="es-icon">ð</div><p>All clear â no tasks!</p></div>`;
     } else {
       const byDate = {};
       allUndone.forEach(i => { const d = i.dueDate||'__none__'; if (!byDate[d]) byDate[d]=[]; byDate[d].push(i); });
       Object.keys(byDate).sort().forEach(d => {
         if (d === '__none__') {
-          content += `<div class="section-header">📋 No date set</div>`;
+          content += `<div class="section-header">ð No date set</div>`;
         } else {
           const dt = new Date(d + 'T00:00:00');
           const isToday = d === todayStr;
@@ -898,13 +898,13 @@ const renderTasksTab = () => {
         content += byDate[d].map(renderTaskCard).join('');
       });
     }
-    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>＋</span> Add task...</div>`;
+    content += `<div class="add-task-row" onclick="openEditModal(null)"><span>ï¼</span> Add task...</div>`;
   }
 
   // Completed section
   if (completed.length > 0) {
     content += `<div class="completed-toggle" onclick="toggleCompleted()">
-      Completed (${completed.length}) <span>${S.showCompleted?'▲':'▼'}</span>
+      Completed (${completed.length}) <span>${S.showCompleted?'â²':'â¼'}</span>
     </div>`;
     if (S.showCompleted) content += completed.map(renderTaskCard).join('');
   }
@@ -914,9 +914,27 @@ const renderTasksTab = () => {
 
 const timeToMins = t => { if (!t) return 0; const [h,m] = t.split(':').map(Number); return h*60+(m||0); };
 
-// ═══════════════════════════════════════════════
-// MEETING CARD — shared by Upcoming & Past views
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// MEETING CARD â shared by Upcoming & Past views
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+const stripHtml = html => {
+  if (!html) return '';
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 const renderMeetingCard = (m, isPast = false) => {
   const expanded = S.expandedMeetingId === m.id;
   const hasNotes = !!(m.notes && m.notes.trim());
@@ -924,57 +942,101 @@ const renderMeetingCard = (m, isPast = false) => {
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
       <div class="meeting-title" style="flex:1">${esc(m.title)}</div>
       <button onclick="toggleMeetingNotes('${m.id}')" title="${expanded?'Close notes':'Add / view notes'}"
-        style="background:none;border:none;cursor:pointer;font-size:15px;flex-shrink:0;padding:2px 4px;border-radius:6px;color:${hasNotes?'#6366F1':'#94A3B8'}">${hasNotes?'📝':'📄'}${expanded?'▲':'▼'}</button>
+        style="background:none;border:none;cursor:pointer;font-size:15px;flex-shrink:0;padding:2px 4px;border-radius:6px;color:${hasNotes?'#6366F1':'#94A3B8'}">${hasNotes?'ð':'ð'}${expanded?'â²':'â¼'}</button>
     </div>
     <div class="meeting-meta">
-      ${m.startTime ? `<span class="meeting-time">🕐 ${m.startTime}${m.endTime?' – '+m.endTime:''}</span>` : '<span class="meeting-time">All day</span>'}
-      ${m.location ? `<span class="meeting-loc">📍 ${esc(m.location)}</span>` : ''}
-      ${m.project ? `<span class="meta-chip meta-project" style="font-size:10px">📁 ${esc(m.project)}</span>` : ''}
+      ${m.startTime ? `<span class="meeting-time">ð ${m.startTime}${m.endTime?' â '+m.endTime:''}</span>` : '<span class="meeting-time">All day</span>'}
+      ${m.location ? `<span class="meeting-loc">ð ${esc(m.location)}</span>` : ''}
+      ${m.project ? `<span class="meta-chip meta-project" style="font-size:10px">ð ${esc(m.project)}</span>` : ''}
     </div>
-    ${hasNotes && !expanded ? `<div style="font-size:12px;color:#475569;margin-top:6px;padding:6px 8px;background:#F8FAFC;border-radius:6px;line-height:1.5;white-space:pre-wrap">${esc(m.notes)}</div>` : ''}
+    ${hasNotes && !expanded ? `<div style="font-size:12px;color:#475569;margin-top:6px;padding:6px 8px;background:#F8FAFC;border-radius:6px;line-height:1.5;white-space:pre-wrap">${esc(stripHtml(m.notes))}</div>` : ''}
     ${expanded ? `<div style="margin-top:8px">
       <textarea id="meeting-notes-${m.id}"
         style="width:100%;padding:9px 10px;border:1px solid #C7D2FE;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;min-height:90px;outline:none;line-height:1.5;color:#1E293B"
-        placeholder="Meeting notes, decisions, action items, follow-ups...">${esc(m.notes||'')}</textarea>
+        placeholder="Meeting notes, decisions, action items, follow-ups...">${esc(stripHtml(m.notes||''))}</textarea>
       <div style="display:flex;gap:6px;margin-top:6px">
-        <button class="sync-btn primary" style="padding:5px 14px;font-size:12px" onclick="saveMeetingNotes('${m.id}')">💾 Save Notes</button>
+        <button class="sync-btn primary" style="padding:5px 14px;font-size:12px" onclick="saveMeetingNotes('${m.id}')">ð¾ Save Notes</button>
         <button class="sync-btn" style="padding:5px 12px;font-size:12px;background:#F1F5F9;color:#64748B;border:1px solid #E2E8F0" onclick="S.expandedMeetingId=null;render()">Cancel</button>
       </div>
     </div>` : ''}
     <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
       ${!isPast ? `<button class="sync-btn success" style="padding:4px 10px;font-size:11px" onclick="meetingToTask('${m.id}')">+ Follow-up</button>` : ''}
-      <button class="sync-btn" style="padding:4px 10px;font-size:11px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE" onclick="openEditModal('${m.id}')">✏️ Edit</button>
-      <button class="sync-btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteItem('${m.id}')">🗑</button>
+      <button class="sync-btn" style="padding:4px 10px;font-size:11px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE" onclick="openEditModal('${m.id}')">âï¸ Edit</button>
+      <button class="sync-btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteItem('${m.id}')">ð</button>
     </div>
   </div>`;
 };
 
 const renderMeetingsTab = () => {
-  const view = S.meetingView || 'upcoming';
-  const span = S.meetingDaySpan || 3;
+  const view = (!S.meetingView || S.meetingView === 'upcoming') ? 'list' : S.meetingView;
+  const span = S.meetingDaySpan || 7;
   const baseDate = addDays(today(), S.meetingOffset);
   const dates = Array.from({length: span}, (_, i) => addDays(baseDate, i));
   const endDate = dates[dates.length - 1];
-  const rangeLabel = span === 1 ? fmt(baseDate) : `${fmt(baseDate)} – ${fmt(endDate)}`;
+  const rangeLabel = `${fmt(baseDate)} → ${fmt(endDate)}`;
   const todayStr = today();
 
   let html = `
     <div class="view-toggles" style="justify-content:space-between;align-items:center">
       <div style="display:flex;gap:6px">
-        <button class="view-btn ${view==='upcoming'?'active':''}" onclick="setMeetingView('upcoming')">📅 Upcoming</button>
-        <button class="view-btn ${view==='past'?'active':''}" onclick="setMeetingView('past')">📋 Past</button>
+        <button class="view-btn ${view==='list'?'active':''}" onclick="setMeetingView('list')">📋 List</button>
+        <button class="view-btn ${view==='calendar'?'active':''}" onclick="setMeetingView('calendar')">📅 Calendar</button>
+        <button class="view-btn ${view==='past'?'active':''}" onclick="setMeetingView('past')">🕐 Past</button>
       </div>
       <button onclick="exportMeetingNotes()" style="flex-shrink:0;padding:5px 10px;border-radius:8px;border:1px solid #BBF7D0;background:#F0FDF4;color:#059669;font-size:11px;font-weight:600;cursor:pointer">⬇️ Export CSV</button>
     </div>`;
 
   if (!S.gcalToken) {
-    html += `<div class="empty-state"><div class="es-icon">🔗</div><p>Connect Google Calendar<br>to see your meetings.</p>
+    html += `<div class="empty-state"><div class="es-icon">📅</div><p>Connect Google Calendar<br>to see your meetings.</p>
     <button class="sync-btn primary" style="margin-top:12px" onclick="gcalAuth()">Connect GCal</button></div>`;
     return html;
   }
 
-  // ── UPCOMING VIEW ─────────────────────────────
-  if (view === 'upcoming') {
+  // ── LIST VIEW (default) ─────────────────────────────
+  if (view === 'list') {
+    if (S.syncing) {
+      html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading meetings...</p></div>`;
+      return html;
+    }
+    const upcoming = S.meetings
+      .slice()
+      .sort((a, b) => {
+        if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+        return (a.startTime || '00:00').localeCompare(b.startTime || '00:00');
+      });
+    if (upcoming.length === 0) {
+      html += `<div class="empty-state"><div class="es-icon">🗓️</div><p>No upcoming meetings found.<br><span style="font-size:12px;color:#94A3B8">GCal syncs the next 14 days.</span></p></div>`;
+      return html;
+    }
+    let lastDate = null;
+    upcoming.forEach((m, idx) => {
+      const d = m.dueDate;
+      if (d !== lastDate) {
+        const dt = new Date(d + 'T00:00:00');
+        const isToday = d === todayStr;
+        html += `<div class="week-day-header ${isToday?'week-day-today':''}">
+          <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
+          <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}</span>
+          ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
+        </div>`;
+        lastDate = d;
+      }
+      // Free gap between consecutive meetings on same day
+      if (idx > 0 && upcoming[idx-1].dueDate === d) {
+        const prevEnd = upcoming[idx-1].endTime;
+        const thisStart = m.startTime;
+        if (prevEnd && thisStart && thisStart > prevEnd) {
+          const gapMins = timeToMins(thisStart) - timeToMins(prevEnd);
+          if (gapMins >= 15) {
+            html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${prevEnd} → ${thisStart}</div>`;
+          }
+        }
+      }
+      html += renderMeetingCard(m, false);
+    });
+
+  // ── CALENDAR VIEW ──────────────────────────────────
+  } else if (view === 'calendar') {
     html += `
       <div class="view-toggles" style="padding-top:0">
         <button class="view-btn ${span===3?'active':''}" onclick="setMeetingSpan(3)">3 Days</button>
@@ -1022,7 +1084,7 @@ const renderMeetingsTab = () => {
             if (thisEnd && nextStart && nextStart > thisEnd) {
               const gapMins = timeToMins(nextStart) - timeToMins(thisEnd);
               if (gapMins >= 15) {
-                html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${thisEnd} – ${nextStart}</div>`;
+                html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${thisEnd} → ${nextStart}</div>`;
               }
             }
           }
@@ -1035,7 +1097,7 @@ const renderMeetingsTab = () => {
       }
     });
 
-  // ── PAST VIEW ─────────────────────────────────
+  // ── PAST VIEW ──────────────────────────────────────
   } else {
     if (S.syncing) {
       html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading past meetings...</p></div>`;
@@ -1043,13 +1105,13 @@ const renderMeetingsTab = () => {
     }
     if (!S.pastMeetingsLoaded) {
       html += `<div class="empty-state" style="padding:30px 20px">
-        <div class="es-icon">📋</div>
+        <div class="es-icon">🕐</div>
         <p style="margin-bottom:4px">View your last 30 days of meetings</p>
         <p style="font-size:12px;color:#94A3B8">Add notes and export as CSV for follow-up</p>
         <button class="sync-btn primary" style="margin-top:14px" onclick="fetchPastMeetings()">📥 Load Past Meetings</button>
       </div>`;
     } else if (!S.pastMeetings || S.pastMeetings.length === 0) {
-      html += `<div class="empty-state"><div class="es-icon">📭</div><p>No meetings found in the last 30 days.</p></div>`;
+      html += `<div class="empty-state"><div class="es-icon">😭</div><p>No meetings found in the last 30 days.</p></div>`;
     } else {
       const byDate = {};
       S.pastMeetings.forEach(m => {
@@ -1078,7 +1140,7 @@ const renderMeetingsTab = () => {
 const renderProjectsTab = () => {
   const projects = getProjects();
   if (projects.length === 0) {
-    return `<div class="empty-state"><div class="es-icon">🏗</div>
+    return `<div class="empty-state"><div class="es-icon">ð</div>
       <p>No projects yet.<br>Set a <strong>Project</strong> field when creating tasks to track them here.</p>
       <button class="sync-btn primary" style="margin-top:16px" onclick="openEditModal(null)">+ New Task with Project</button>
     </div>`;
@@ -1096,16 +1158,16 @@ const renderProjectsTab = () => {
     return `<div class="project-group" style="margin:8px 16px 0">
       <div class="project-group-header" onclick="toggleProject('${esc(proj)}')">
         <div>
-          <div class="project-group-title">📁 ${esc(proj)}</div>
-          <div class="project-group-meta">${pending.length} pending · ${done.length} done · ${pct}% complete</div>
-          ${daysLeft !== null ? `<div class="project-deadline">⏰ ${daysLeft < 0 ? Math.abs(daysLeft)+' days overdue!' : daysLeft === 0 ? 'Due today!' : daysLeft+' days to next deadline'}</div>` : ''}
+          <div class="project-group-title">ð ${esc(proj)}</div>
+          <div class="project-group-meta">${pending.length} pending Â· ${done.length} done Â· ${pct}% complete</div>
+          ${daysLeft !== null ? `<div class="project-deadline">â° ${daysLeft < 0 ? Math.abs(daysLeft)+' days overdue!' : daysLeft === 0 ? 'Due today!' : daysLeft+' days to next deadline'}</div>` : ''}
           ${stages.length ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${stages.map(s=>{const st=PROJECT_STAGES.find(x=>x.value===s);return st?`<span class="meta-chip meta-stage" style="font-size:10px">${st.label}</span>`:''}).join('')}</div>` : ''}
         </div>
-        <span>${S.expandedProjects[proj]!==false?'▲':'▼'}</span>
+        <span>${S.expandedProjects[proj]!==false?'â²':'â¼'}</span>
       </div>
       <div class="progress-bar" style="margin:0 14px 8px"><div class="progress-fill" style="width:${pct}%"></div></div>
       ${S.expandedProjects[proj]!==false ? `<div class="project-group-tasks">
-        ${pending.length>0 ? pending.map(renderTaskCard).join('') : '<div style="padding:10px 14px;font-size:13px;color:#94A3B8">All tasks done ✓</div>'}
+        ${pending.length>0 ? pending.map(renderTaskCard).join('') : '<div style="padding:10px 14px;font-size:13px;color:#94A3B8">All tasks done â</div>'}
       </div>` : ''}
     </div>`;
   }).join('');
@@ -1114,18 +1176,18 @@ const renderProjectsTab = () => {
 const renderAlarmsTab = () => {
   const alarming = getAlarmingItems();
   if (alarming.length === 0) {
-    return `<div class="empty-state"><div class="es-icon">🔕</div><p>No active alerts.</p></div>`;
+    return `<div class="empty-state"><div class="es-icon">ð</div><p>No active alerts.</p></div>`;
   }
   return alarming.map(item => {
     const od = isOverdue(item);
     return `<div class="alarm-card">
-      <div class="alarm-icon">${od ? '🚨' : '⏰'}</div>
+      <div class="alarm-icon">${od ? 'ð¨' : 'â°'}</div>
       <div class="alarm-body">
         <div class="alarm-title">${esc(item.title)}</div>
         <div class="alarm-time">${od ? 'OVERDUE since ' + fmt(item.dueDate) : 'Due today' + (item.dueTime?' at '+item.dueTime:'')}</div>
-        ${item.project ? `<div style="font-size:11px;color:#64748B;margin-top:2px">📁 ${esc(item.project)}</div>` : ''}
+        ${item.project ? `<div style="font-size:11px;color:#64748B;margin-top:2px">ð ${esc(item.project)}</div>` : ''}
       </div>
-      <button class="icon-btn" onclick="openEditModal('${item.id}')">✏️</button>
+      <button class="icon-btn" onclick="openEditModal('${item.id}')">âï¸</button>
     </div>`;
   }).join('');
 };
@@ -1134,10 +1196,10 @@ const renderSyncTab = () => {
   const isConnected = !!S.gcalToken;
   const configured = GCAL_CLIENT_ID !== 'YOUR_GCAL_CLIENT_ID_HERE';
 
-  const telegramScript = `// ═══ Telegram Bot via Google Apps Script ═══
-// 1. Go to script.google.com → New project
+  const telegramScript = `// âââ Telegram Bot via Google Apps Script âââ
+// 1. Go to script.google.com â New project
 // 2. Paste this code, fill in BOT_TOKEN
-// 3. Deploy → Web app → Anyone
+// 3. Deploy â Web app â Anyone
 // 4. Set webhook: https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEB_APP_URL}
 
 const BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN';
@@ -1153,7 +1215,7 @@ function doPost(e) {
 
   // Ignore bot commands except /start
   if (text === '/start') {
-    reply(chatId, '👋 Hi! Send me a task like:\\n' +
+    reply(chatId, 'ð Hi! Send me a task like:\\n' +
       '"Review panel drawings by Friday"\\n' +
       '"Meeting ABC client tomorrow 2pm"\\n' +
       '"High: Submit tender by 25 Jun"');
@@ -1162,9 +1224,9 @@ function doPost(e) {
 
   const task = parseTask(text);
   createCalendarEvent(task);
-  reply(chatId, '✅ Added: ' + task.title +
-    (task.date ? '\\n📅 ' + task.date : '') +
-    (task.priority !== 'medium' ? '\\n🔺 ' + task.priority.toUpperCase() : ''));
+  reply(chatId, 'â Added: ' + task.title +
+    (task.date ? '\\nð ' + task.date : '') +
+    (task.priority !== 'medium' ? '\\nðº ' + task.priority.toUpperCase() : ''));
   return ok();
 }
 
@@ -1232,70 +1294,71 @@ function ok() { return ContentService.createTextOutput('ok'); }`;
 
   return `<div class="sync-section">
     <div class="sync-card">
-      <h3>🔗 Google Calendar</h3>
-      ${!configured ? '<p style="color:#DC2626;font-weight:600">⚠️ Set your GCAL_CLIENT_ID in the source code first.</p>' : ''}
-      <p>Status: ${isConnected ? '<strong style="color:#059669">✅ Connected</strong>' : '<strong style="color:#DC2626">❌ Not connected</strong>'}</p>
+      <h3>ð Google Calendar</h3>
+      ${!configured ? '<p style="color:#DC2626;font-weight:600">â ï¸ Set your GCAL_CLIENT_ID in the source code first.</p>' : ''}
+      <p>Status: ${isConnected ? '<strong style="color:#059669">â Connected</strong>' : '<strong style="color:#DC2626">â Not connected</strong>'}</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="sync-btn primary" onclick="${isConnected ? 'syncFromGcal()' : 'gcalAuth()'}">
-          ${S.syncing ? '<span class="spinner"></span> Syncing...' : isConnected ? '🔄 Sync Now' : '🔗 Connect'}
+          ${S.syncing ? '<span class="spinner"></span> Syncing...' : isConnected ? 'ð Sync Now' : 'ð Connect'}
         </button>
         ${isConnected ? '<button class="sync-btn danger" onclick="disconnectGcal()">Disconnect</button>' : ''}
       </div>
-      <p class="sync-status">${S.items.filter(i=>i.fromGcal).length} GCal events · ${getTasks().filter(i=>!i.fromGcal).length} local tasks</p>
+      <p class="sync-status">${S.items.filter(i=>i.fromGcal).length} GCal events Â· ${getTasks().filter(i=>!i.fromGcal).length} local tasks</p>
     </div>
 
     <div class="sync-card">
-      <h3>📖 How to Use TaskMaster Pro</h3>
+      <h3>ð How to Use TaskMaster Pro</h3>
 
-      <p style="font-weight:600;margin-top:4px;margin-bottom:6px">📑 Tabs Overview</p>
-      <p>✅ <strong>Tasks</strong> — Add, manage and track all your work tasks. Use Today / Week / Project / All views. Filter by Energy Tag or Project.</p>
-      <p style="margin-top:4px">📅 <strong>Meetings</strong> — See your GCal appointments. Switch between 3/5/7-day views. Add meeting notes that save back to GCal. View past 30 days. Export all meeting notes as CSV.</p>
-      <p style="margin-top:4px">📁 <strong>Projects</strong> — Tasks grouped by project. See completion %, deadlines, and project stage.</p>
-      <p style="margin-top:4px">🔗 <strong>Sync</strong> — Connect/disconnect GCal, back up and restore data, export JSON.</p>
+      <p style="font-weight:600;margin-top:4px;margin-bottom:6px">ð Tabs Overview</p>
+      <p>â <strong>Tasks</strong> â Add, manage and track all your work tasks. Use Today / Week / Project / All views. Filter by Energy Tag or Project.</p>
+      <p style="margin-top:4px">ð <strong>Meetings</strong> â See your GCal appointments. Switch between 3/5/7-day views. Add meeting notes that save back to GCal. View past 30 days. Export all meeting notes as CSV.</p>
+      <p style="margin-top:4px">ð <strong>Projects</strong> â Tasks grouped by project. See completion %, deadlines, and project stage.</p>
+      <p style="margin-top:4px">ð <strong>Sync</strong> â Connect/disconnect GCal, back up and restore data, export JSON.</p>
 
-      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">➕ Adding Tasks</p>
-      <p>Tap the <strong>＋</strong> button or "+ Add task..." in any view. Fill in title, due date, priority, energy tag, project, assignee, and stage. Hit 💾 Save. Tasks sync to GCal automatically.</p>
+      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">â Adding Tasks</p>
+      <p>Tap the <strong>ï¼</strong> button or "+ Add task..." in any view. Fill in title, due date, priority, energy tag, project, assignee, and stage. Hit ð¾ Save. Tasks sync to GCal automatically.</p>
 
-      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">🔁 GCal Sync</p>
-      <p>Tap <strong>GCal Off</strong> in the header to connect. Once connected, the app syncs your calendar meetings and pushes tasks to GCal. Tap <strong>✅ GCal Live</strong> anytime to force a sync.</p>
+      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">ð GCal Sync</p>
+      <p>Tap <strong>GCal Off</strong> in the header to connect. Once connected, the app syncs your calendar meetings and pushes tasks to GCal. Tap <strong>â GCal Live</strong> anytime to force a sync.</p>
 
-      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">📱 iPhone Home Screen Tips</p>
-      <p>Open this app in Safari → Share → <strong>Add to Home Screen</strong>. The home screen app has separate storage from Safari — if data appears empty, just tap <strong>GCal Off</strong> to reconnect and your data will restore automatically from the GCal backup.</p>
+      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">ð± iPhone Home Screen Tips</p>
+      <p>Open this app in Safari â Share â <strong>Add to Home Screen</strong>. The home screen app has separate storage from Safari â if data appears empty, just tap <strong>GCal Off</strong> to reconnect and your data will restore automatically from the GCal backup.</p>
 
-      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">📝 Meeting Notes</p>
-      <p>In the Meetings tab, tap the 📄 icon on any meeting card to add notes. Notes save to the GCal event so they're visible on all devices. Switch to <strong>Past</strong> view to review last 30 days of meetings.</p>
+      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">ð Meeting Notes</p>
+      <p>In the Meetings tab, tap the ð icon on any meeting card to add notes. Notes save to the GCal event so they're visible on all devices. Switch to <strong>Past</strong> view to review last 30 days of meetings.</p>
 
-      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">📊 Export Meeting Notes</p>
-      <p>Tap <strong>⬇️ Export CSV</strong> in the Meetings tab header. Downloads a spreadsheet of all upcoming + past meetings with your notes — ready for Excel or Google Sheets.</p>
+      <p style="font-weight:600;margin-top:10px;margin-bottom:6px">ð Export Meeting Notes</p>
+      <p>Tap <strong>â¬ï¸ Export CSV</strong> in the Meetings tab header. Downloads a spreadsheet of all upcoming + past meetings with your notes â ready for Excel or Google Sheets.</p>
     </div>
 
     <div class="sync-card">
-      <h3>☁️ Cross-Device Sync</h3>
-      <p style="color:#1D4ED8;font-weight:600;font-size:12px">How it works: Your tasks are saved in your browser's local storage. To use on multiple devices (iPhone home screen, another browser), use GCal Backup below — it stores your tasks inside Google Calendar so any device with GCal connected can restore them.</p>
+      <h3>âï¸ Cross-Device Sync</h3>
+      <p style="color:#1D4ED8;font-weight:600;font-size:12px">How it works: Your tasks are saved in your browser's local storage. To use on multiple devices (iPhone home screen, another browser), use GCal Backup below â it stores your tasks inside Google Calendar so any device with GCal connected can restore them.</p>
       <div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:12px;color:#92400E">
-        ⚠️ <strong>iPhone Home Screen:</strong> When you add this app to your home screen, it gets its own storage separate from Safari. If you reinstall or update, use "Restore from GCal" after reconnecting GCal to get your data back.
+        â ï¸ <strong>iPhone Home Screen:</strong> When you add this app to your home screen, it gets its own storage separate from Safari. If you reinstall or update, use "Restore from GCal" after reconnecting GCal to get your data back.
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-        <button class="sync-btn primary" onclick="saveToGcal().then(()=>showToast('☁️ Backup saved to GCal'))">☁️ Backup to GCal</button>
-        <button class="sync-btn success" onclick="restoreFromGcal()">📥 Restore from GCal</button>
+        <button class="sync-btn primary" onclick="saveToGcal().then(()=>showToast('âï¸ Backup saved to GCal'))">âï¸ Backup to GCal</button>
+        <button class="sync-btn success" onclick="restoreFromGcal()">ð¥ Restore from GCal</button>
       </div>
-      <p class="sync-status" style="margin-top:6px">${isConnected ? '✅ GCal connected — backup available' : '❌ Connect GCal first to enable backup'}</p>
+      <p class="sync-status" style="margin-top:6px">${isConnected ? 'â GCal connected â backup available' : 'â Connect GCal first to enable backup'}</p>
     </div>
 
     <div class="sync-card">
-      <h3>📊 Data</h3>
+      <h3>ð Data</h3>
       <p>Export your tasks as JSON or clear all local data.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-        <button class="sync-btn success" onclick="exportData()">⬇️ Export JSON</button>
-        <button class="sync-btn danger" onclick="clearData()">🗑 Clear All Data</button>
+        <button class="sync-btn success" onclick="exportData()">â¬ï¸ Export JSON</button>
+        <button class="sync-btn" onclick="importData()" style="background:#EEF2FF;color:#4F46E5;border:1px solid #C7D2FE">⬆️ Import JSON</button>
+        <button class="sync-btn danger" onclick="clearData()">ð Clear All Data</button>
       </div>
     </div>
   </div>`;
 };
 
-// ═══════════════════════════════════════════════
-// TIME SELECT — 15-min intervals, works on all platforms
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// TIME SELECT â 15-min intervals, works on all platforms
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const timeSelectHTML = (id, value, onchangeStr) => {
   const opts = [];
   for (let h = 0; h < 24; h++) {
@@ -1304,14 +1367,14 @@ const timeSelectHTML = (id, value, onchangeStr) => {
     }
   }
   return `<select class="form-input"${id?' id="'+id+'"':''} onchange="${onchangeStr}">
-    <option value="">— None —</option>
+    <option value="">â None â</option>
     ${opts.map(t => `<option value="${t}"${value===t?' selected':''}>${t}</option>`).join('')}
   </select>`;
 };
 
-// ═══════════════════════════════════════════════
-// CHIP REFRESH — update chip visuals without full re-render (keeps keyboard open)
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// CHIP REFRESH â update chip visuals without full re-render (keeps keyboard open)
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const refreshChips = key => {
   if (!S.editItem) return;
   const item = S.editItem;
@@ -1331,9 +1394,9 @@ const refreshChips = key => {
   }
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK MODAL
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const renderModal = () => {
   if (!S.modal || !S.editItem) return '';
   const item = S.editItem;
@@ -1344,7 +1407,7 @@ const renderModal = () => {
       <div class="modal-handle"></div>
       <div class="modal-header">
         <span class="modal-title">${item.id && S.items.find(i=>i.id===item.id) ? 'Edit Task' : 'New Task'}</span>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" onclick="closeModal()">Ã</button>
       </div>
 
       <div class="form-group">
@@ -1413,7 +1476,7 @@ const renderModal = () => {
         <div class="form-group">
           <label class="form-label">Est. Time</label>
           <select class="form-input" onchange="updateEdit('estimatedMins',parseInt(this.value))">
-            ${[0,15,30,60,90,120,180,240,480].map(m => `<option value="${m}" ${item.estimatedMins===m?'selected':''}>${m===0?'—':durLabel(m)}</option>`).join('')}
+            ${[0,15,30,60,90,120,180,240,480].map(m => `<option value="${m}" ${item.estimatedMins===m?'selected':''}>${m===0?'â':durLabel(m)}</option>`).join('')}
           </select>
         </div>
         <div class="form-group">
@@ -1438,9 +1501,9 @@ const renderModal = () => {
       <div class="action-items">
         <label class="form-label">Action Items</label>
         ${(item.actionItems||[]).map(ai => `<div class="ai-item">
-          <div class="ai-check ${ai.done?'done':''}" onclick="toggleAI('${item.id}','${ai.id}')">${ai.done?'✓':''}</div>
+          <div class="ai-check ${ai.done?'done':''}" onclick="toggleAI('${item.id}','${ai.id}')">${ai.done?'â':''}</div>
           <span class="ai-text ${ai.done?'done':''}">${esc(ai.text)}</span>
-          <button class="ai-del" onclick="removeActionItem('${ai.id}')">×</button>
+          <button class="ai-del" onclick="removeActionItem('${ai.id}')">Ã</button>
         </div>`).join('')}
         <div class="add-ai-row">
           <input class="add-ai-input" id="ai-input" placeholder="Add action item..." onkeydown="if(event.key==='Enter'){addActionItem(this.value);this.value=''}"/>
@@ -1450,28 +1513,28 @@ const renderModal = () => {
 
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveItem()">💾 Save</button>
+        <button class="btn btn-primary" onclick="saveItem()">ð¾ Save</button>
       </div>
     </div>
   </div>`;
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // MAIN RENDER
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const render = () => {
   const overdue = getOverdueItems();
   const alarms  = getAlarmingItems();
   const todayStr = today();
   const now = new Date();
   const hr = now.getHours();
-  const emoji = hr < 12 ? '🌅' : hr < 17 ? '☀️' : '🌙';
+  const emoji = hr < 12 ? 'ð' : hr < 17 ? 'âï¸' : 'ð';
 
   const tabs = [
-    {id:'tasks',    icon:'✅', label:'Tasks'},
-    {id:'meetings', icon:'📅', label:'Meetings'},
-    {id:'projects', icon:'📁', label:'Projects'},
-    {id:'sync',     icon:'🔗', label:'Sync'}
+    {id:'tasks',    icon:'â', label:'Tasks'},
+    {id:'meetings', icon:'ð', label:'Meetings'},
+    {id:'projects', icon:'ð', label:'Projects'},
+    {id:'sync',     icon:'ð', label:'Sync'}
   ];
 
   let tabContent = '';
@@ -1487,13 +1550,13 @@ const render = () => {
         <div>
           <div class="greeting">${getGreeting()}, ${S.gcalUser ? S.gcalUser.split('@')[0].replace(/\./g,' ') : 'Ye Win'} ${emoji}</div>
           <div class="app-title">TaskMaster Pro</div>
-          <div class="header-meta">${S.gcalUser || 'yewinhtut.sunlight@gmail.com'} · SGT</div>
+          <div class="header-meta">${S.gcalUser || 'yewinhtut.sunlight@gmail.com'} Â· SGT</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
           <div class="badge gcal-live" onclick="${S.gcalToken ? 'syncFromGcal()' : 'gcalAuth()'}">
-            ${S.syncing ? '<span class="spinner"></span>' : (S.gcalToken ? '✅' : '⬜')} GCal ${S.gcalToken ? 'Live' : 'Off'}
+            ${S.syncing ? '<span class="spinner"></span>' : (S.gcalToken ? 'â' : 'â¬')} GCal ${S.gcalToken ? 'Live' : 'Off'}
           </div>
-          <div class="badge ${S.focusMode?'active':''}" onclick="toggleFocus()">🎯 Focus${S.focusMode?' On':''}</div>
+          <div class="badge ${S.focusMode?'active':''}" onclick="toggleFocus()">ð¯ Focus${S.focusMode?' On':''}</div>
         </div>
       </div>
       <div class="stats">
@@ -1509,7 +1572,7 @@ const render = () => {
       </div>
     </div>
     <div class="content">${tabContent}</div>
-    <button class="fab" onclick="openEditModal(null)" title="New Task">＋</button>
+    <button class="fab" onclick="openEditModal(null)" title="New Task">ï¼</button>
     <nav class="bottom-nav">
       ${tabs.map(t => `<button class="nav-item ${S.tab===t.id?'active':''}" onclick="setTab('${t.id}')">
         <span class="nav-icon">${t.icon}</span>${t.label}
@@ -1522,9 +1585,9 @@ const render = () => {
   document.getElementById('app').innerHTML = html;
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // EVENT HANDLERS (called from HTML)
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const setTab = t => { S.tab = t; render(); };
 const setView = v => { S.viewMode = v; render(); };
 const setEnergyFilter = f => { S.energyFilter = f; render(); };
@@ -1540,7 +1603,7 @@ const closeModalIfBg = e => { if (e.target.classList.contains('modal-overlay')) 
 const updateEdit = (key, val) => {
   if (!S.editItem) return;
   S.editItem[key] = val;
-  // Only update chip visuals — do NOT call render() or mobile keyboard gets dismissed
+  // Only update chip visuals â do NOT call render() or mobile keyboard gets dismissed
   if (key === 'priority' || key === 'energyTag' || key === 'projectStage') refreshChips(key);
 };
 const disconnectGcal = () => {
@@ -1567,7 +1630,7 @@ const meetingToTask = meetingId => {
 const copyScript = () => {
   const txt = document.getElementById('tg-script');
   if (!txt) return;
-  navigator.clipboard.writeText(txt.innerText).then(() => showToast('📋 Script copied!')).catch(() => showToast('Select text and copy manually'));
+  navigator.clipboard.writeText(txt.innerText).then(() => showToast('ð Script copied!')).catch(() => showToast('Select text and copy manually'));
 };
 const exportData = () => {
   const blob = new Blob([JSON.stringify({items:S.items}, null, 2)], {type:'application/json'});
@@ -1575,19 +1638,58 @@ const exportData = () => {
   a.href = URL.createObjectURL(blob);
   a.download = 'taskmaster_backup_' + today() + '.json';
   a.click();
-  showToast('⬇️ Exported!');
+  showToast('â¬ï¸ Exported!');
 };
+
+const importData = () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const imported = Array.isArray(data) ? data
+        : (data.items ? [...(data.items||[]), ...(data.deleted||[]), ...(data.snoozed||[])] : []);
+      if (!imported.length) { showToast('No items found in file'); return; }
+      const existingIds  = new Set(S.items.map(i => i.id).filter(Boolean));
+      const existingGcal = new Set(S.items.map(i => i.gcalId).filter(Boolean));
+      let added = 0, skipped = 0;
+      imported.forEach(item => {
+        if (!item || !item.title) return;
+        const dupById   = item.id && existingIds.has(item.id);
+        const dupByGcal = item.gcalId && existingGcal.has(item.gcalId);
+        if (dupById || dupByGcal) { skipped++; return; }
+        const newItem = { ...item, id: item.id || uid() };
+        S.items.push(newItem);
+        existingIds.add(newItem.id);
+        if (newItem.gcalId) existingGcal.add(newItem.gcalId);
+        added++;
+      });
+      save();
+      render();
+      showToast(\`✅ Imported \${added} new task\${added!==1?'s':''}, skipped \${skipped} duplicate\${skipped!==1?'s':''}\`);
+    } catch(err) {
+      showToast('❌ Import failed: ' + err.message);
+    }
+  };
+  input.click();
+};
+
+
 const clearData = () => {
   if (!confirm('Clear ALL data? This cannot be undone.')) return;
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(DELETED_KEY);
   S.items = []; S.deleted = [];
-  saveData(); render(); showToast('🗑 Cleared');
+  saveData(); render(); showToast('ð Cleared');
 };
 
-// ═══════════════════════════════════════════════
-// OPTION A — MEETING NOTES, PAST VIEW, CSV EXPORT
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+// OPTION A â MEETING NOTES, PAST VIEW, CSV EXPORT
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 const toggleMeetingNotes = id => {
   S.expandedMeetingId = S.expandedMeetingId === id ? null : id;
   render();
@@ -1604,10 +1706,10 @@ const saveMeetingNotes = async id => {
   S.expandedMeetingId = null;
   saveData();
   if (S.gcalToken && m.gcalId) {
-    try { await gcalUpdateEvent(m); showToast('📝 Notes saved to GCal'); }
-    catch(e) { showToast('📝 Notes saved locally'); }
+    try { await gcalUpdateEvent(m); showToast('ð Notes saved to GCal'); }
+    catch(e) { showToast('ð Notes saved locally'); }
   } else {
-    showToast('📝 Notes saved');
+    showToast('ð Notes saved');
   }
   render();
 };
@@ -1620,7 +1722,7 @@ const setMeetingSpan = n => { S.meetingDaySpan = n; render(); };
 
 const fetchPastMeetings = async () => {
   if (!S.gcalToken) { showToast('Connect GCal first'); return; }
-  showToast('Loading past meetings…');
+  showToast('Loading past meetingsâ¦');
   try {
     const now = new Date();
     const past30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -1638,10 +1740,10 @@ const fetchPastMeetings = async () => {
       .map(ev => gcalEventToItem(ev));
     S.pastMeetings = past;
     S.pastMeetingsLoaded = true;
-    showToast(`📋 Loaded ${past.length} past meetings`);
+    showToast(`ð Loaded ${past.length} past meetings`);
     render();
   } catch(e) {
-    showToast('⚠️ Failed to load past meetings');
+    showToast('â ï¸ Failed to load past meetings');
     console.error(e);
   }
 };
@@ -1660,18 +1762,18 @@ const exportMeetingNotes = () => {
       m.project||'', m.notes||''
     ]);
   }
-  const csv = '﻿' + rows.map(r => r.map(esc2).join(',')).join('\r\n');
+  const csv = 'ï»¿' + rows.map(r => r.map(esc2).join(',')).join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'meeting_notes_' + today() + '.csv';
   a.click();
-  showToast('⬇️ CSV exported!');
+  showToast('â¬ï¸ CSV exported!');
 };
 
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 // INIT
-// ═══════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââ
 window.addEventListener('load', () => {
   loadData();
   render();
