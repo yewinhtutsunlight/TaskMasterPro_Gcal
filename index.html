@@ -998,42 +998,82 @@ const renderMeetingsTab = () => {
       html += `<div class="empty-state"><div class="es-icon">🔄</div><p>Loading meetings...</p></div>`;
       return html;
     }
-    const upcoming = S.meetings
+    // Split: upcoming (today+future) vs already-ended (past dates or today already done)
+    const nowTime = new Date().toTimeString().slice(0,5); // HH:MM
+    const allSorted = S.meetings
       .slice()
       .sort((a, b) => {
         if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
         return (a.startTime || '00:00').localeCompare(b.startTime || '00:00');
       });
-    if (upcoming.length === 0) {
-      html += `<div class="empty-state"><div class="es-icon">🗓️</div><p>No upcoming meetings found.<br><span style="font-size:12px;color:#94A3B8">GCal syncs the next 14 days.</span></p></div>`;
+    const upcoming = allSorted.filter(m =>
+      m.dueDate > todayStr ||
+      (m.dueDate === todayStr && (!m.endTime || m.endTime >= nowTime))
+    );
+    const expired = allSorted.filter(m =>
+      m.dueDate < todayStr ||
+      (m.dueDate === todayStr && m.endTime && m.endTime < nowTime)
+    );
+
+    if (upcoming.length === 0 && expired.length === 0) {
+      html += `<div class="empty-state"><div class="es-icon">🗓️</div><p>No meetings found.<br><span style="font-size:12px;color:#94A3B8">GCal syncs 30 days back and 14 days forward.</span></p></div>`;
       return html;
     }
-    let lastDate = null;
-    upcoming.forEach((m, idx) => {
-      const d = m.dueDate;
-      if (d !== lastDate) {
-        const dt = new Date(d + 'T00:00:00');
-        const isToday = d === todayStr;
-        html += `<div class="week-day-header ${isToday?'week-day-today':''}">
-          <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
-          <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}</span>
-          ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
-        </div>`;
-        lastDate = d;
-      }
-      // Free gap between consecutive meetings on same day
-      if (idx > 0 && upcoming[idx-1].dueDate === d) {
-        const prevEnd = upcoming[idx-1].endTime;
-        const thisStart = m.startTime;
-        if (prevEnd && thisStart && thisStart > prevEnd) {
-          const gapMins = timeToMins(thisStart) - timeToMins(prevEnd);
-          if (gapMins >= 15) {
-            html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${prevEnd} → ${thisStart}</div>`;
+
+    // ── Upcoming section ──
+    if (upcoming.length > 0) {
+      let lastDate = null;
+      upcoming.forEach((m, idx) => {
+        const d = m.dueDate;
+        if (d !== lastDate) {
+          const dt = new Date(d + 'T00:00:00');
+          const isToday = d === todayStr;
+          html += `<div class="week-day-header ${isToday?'week-day-today':''}">
+            <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
+            <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}</span>
+            ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
+          </div>`;
+          lastDate = d;
+        }
+        if (idx > 0 && upcoming[idx-1].dueDate === d) {
+          const prevEnd = upcoming[idx-1].endTime;
+          const thisStart = m.startTime;
+          if (prevEnd && thisStart && thisStart > prevEnd) {
+            const gapMins = timeToMins(thisStart) - timeToMins(prevEnd);
+            if (gapMins >= 15) {
+              html += `<div style="margin:2px 16px 4px;padding:6px 12px;background:#F0FDF4;border-left:3px solid #4ADE80;border-radius:0 6px 6px 0;font-size:11px;color:#059669;font-weight:600">🟢 ${durLabel(gapMins)} free · ${prevEnd} → ${thisStart}</div>`;
+            }
           }
         }
-      }
-      html += renderMeetingCard(m, false);
-    });
+        html += renderMeetingCard(m, false);
+      });
+    } else {
+      html += `<div style="padding:12px 16px;font-size:13px;color:#94A3B8">No upcoming meetings.</div>`;
+    }
+
+    // ── Expired / already done section ──
+    if (expired.length > 0) {
+      html += `<div style="margin:12px 16px 4px;display:flex;align-items:center;gap:8px">
+        <div style="flex:1;height:1px;background:#E2E8F0"></div>
+        <span style="font-size:11px;color:#94A3B8;font-weight:600;white-space:nowrap">⏰ EARLIER / EXPIRED (${expired.length})</span>
+        <div style="flex:1;height:1px;background:#E2E8F0"></div>
+      </div>`;
+      let lastDate2 = null;
+      expired.forEach((m, idx) => {
+        const d = m.dueDate;
+        if (d !== lastDate2) {
+          const dt = new Date(d + 'T00:00:00');
+          const isToday = d === todayStr;
+          html += `<div class="week-day-header" style="opacity:0.6">
+            <span class="week-day-label">${DAYS_SHORT[dt.getDay()]}</span>
+            <span class="week-day-date">${dt.getDate()} ${MONTHS[dt.getMonth()]}${!isToday?' '+dt.getFullYear():''}</span>
+            ${isToday ? '<span class="week-day-badge">TODAY</span>' : ''}
+          </div>`;
+          lastDate2 = d;
+        }
+        html += renderMeetingCard(m, true);
+      });
+    }
 
   // ── CALENDAR VIEW ──────────────────────────────────
   } else if (view === 'calendar') {
