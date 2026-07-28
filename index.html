@@ -229,9 +229,6 @@ let S = {
   expandedMeetingId:null,  // id of meeting with notes open
   expandedProjects: {},
   calendarSelectedId: null,
-  flowsavvyMirror: false,
-  flowsavvyCalId: null,
-  flowsavvyLastSync: null,
 };
 
 // ═══════════════════════════════════════════════
@@ -519,120 +516,11 @@ const syncFromGcal = async () => {
     saveData();
     scheduleGcalBackup();
     S.syncing = false; render();
-    await fetchFlowSavvyTasks();
     showToast('✅ Synced with Google Calendar');
   } catch(e) {
     S.syncing = false; render();
     showToast('⚠️ Sync error: ' + e.message);
   }
-};
-
-const fetchFlowSavvyTasks = async () => {
-  if (!S.gcalToken || !S.flowsavvyMirror) return;
-  try {
-    // Find the FlowSavvy calendar (auto-detect by name)
-    if (!S.flowsavvyCalId) {
-      const calList = await gcalFetch('/users/me/calendarList?maxResults=50');
-      const match = (calList.items || []).find(c =>
-        c.summary && c.summary.toLowerCase().includes('flowsavvy')
-      );
-      if (!match) {
-        showToast('⚠️ No "FlowSavvy" calendar found in GCal. Check your Google Calendar list.');
-        return;
-      }
-      S.flowsavvyCalId = match.id;
-    }
-
-    const tMin = new Date().toISOString();
-    const tMax = new Date(); tMax.setDate(tMax.getDate() + 30);
-    const params = new URLSearchParams({
-      singleEvents: 'true', orderBy: 'startTime',
-      timeMin: tMin, timeMax: tMax.toISOString(), maxResults: '100'
-    });
-    const data = await gcalFetch(`/calendars/${encodeURIComponent(S.flowsavvyCalId)}/events?` + params);
-    const events = (data.items || []).filter(ev => ev.status !== 'cancelled');
-
-    let added = 0, updated = 0;
-    events.forEach(ev => {
-      if (!ev.summary) return;
-      const start = ev.start?.dateTime || ev.start?.date || '';
-      const end   = ev.end?.dateTime   || ev.end?.date   || '';
-      const dueDate   = start.slice(0, 10);
-      const startTime = start.length > 10 ? start.slice(11, 16) : '';
-      const endTime   = end.length > 10   ? end.slice(11, 16)   : '';
-
-      // Priority from title prefix [H], [M], [L] or description
-      let priority = 'med';
-      let title = ev.summary.trim();
-      const priMap = {
-        '\\[h\\]': 'high', '\\[high\\]': 'high', '\\[urgent\\]': 'high',
-        '\\[m\\]': 'med',  '\\[med\\]': 'med',   '\\[medium\\]': 'med',
-        '\\[l\\]': 'low',  '\\[low\\]': 'low'
-      };
-      for (const [pat, pri] of Object.entries(priMap)) {
-        const rx = new RegExp('^' + pat + '\\s*', 'i');
-        if (rx.test(title)) { priority = pri; title = title.replace(rx, '').trim(); break; }
-      }
-
-      const existing = S.items.find(i => i.gcalId === ev.id);
-      if (existing) {
-        // Update date/time in case FlowSavvy rescheduled it
-        if (existing.source === 'flowsavvy') {
-          existing.dueDate   = dueDate;
-          existing.startTime = startTime;
-          existing.endTime   = endTime;
-          updated++;
-        }
-        return; // don't overwrite user-edited tasks
-      }
-
-      S.items.push({
-        id:         'fs_' + ev.id.replace(/[^a-z0-9]/gi,'').slice(-12),
-        gcalId:     ev.id,
-        title,
-        dueDate,
-        startTime,
-        endTime,
-        priority,
-        notes:      (ev.description || '').replace(/<!--[\s\S]*?-->/g,'').trim(),
-        done:       false,
-        source:     'flowsavvy',
-        fromGcal:   true,
-        type:       'task',
-        project:    '',
-        assignee:   '',
-        energyTag:  '',
-        projectStage: ''
-      });
-      added++;
-    });
-
-    S.flowsavvyLastSync = new Date().toISOString();
-    save();
-    if (added || updated) {
-      showToast(`🌊 FlowSavvy: +${added} new, ${updated} updated`);
-      render();
-    }
-  } catch(e) {
-    console.error('FlowSavvy sync error:', e);
-    showToast('⚠️ FlowSavvy sync failed: ' + e.message);
-  }
-};
-
-const toggleFlowSavvyMirror = async () => {
-  S.flowsavvyMirror = !S.flowsavvyMirror;
-  if (S.flowsavvyMirror) {
-    S.flowsavvyCalId = null; // force re-detect
-    await fetchFlowSavvyTasks();
-  } else {
-    // Remove FlowSavvy-sourced tasks that haven't been edited
-    const before = S.items.length;
-    S.items = S.items.filter(i => i.source !== 'flowsavvy');
-    const removed = before - S.items.length;
-    save(); render();
-    showToast(`FlowSavvy mirror off — ${removed} task${removed!==1?'s':''} removed`);
-  }
-  save(); render();
 };
 
 const gcalCreateEvent = async item => {
@@ -855,7 +743,7 @@ const renderTaskCard = item => {
   return `<div class="task-card ${item.done?'done':''}" data-id="${item.id}">
     <div class="task-check ${item.done?'checked':''}" onclick="toggleDone('${item.id}')">${doneChk}</div>
     <div class="task-body">
-      <div class="task-title ${item.done?'done':''}">${item.source==='flowsavvy'?'<span style="font-size:9px;background:#D1FAE5;color:#065F46;border-radius:3px;padding:1px 4px;margin-right:4px;font-weight:700;vertical-align:middle">🌊 FS</span>':''}${esc(item.title)}</div>
+      <div class="task-title ${item.done?'done':''}">${esc(item.title)}</div>
       <div class="task-meta">
         ${item.dueDate ? `<span class="meta-chip meta-date ${od?'overdue':''}">${fmt(item.dueDate)}${item.dueTime?' '+item.dueTime:''}</span>` : ''}
         <span class="meta-chip meta-priority" style="background:${p.color}">${p.label}</span>
@@ -1535,28 +1423,6 @@ function ok() { return ContentService.createTextOutput('ok'); }`;
         ${isConnected ? '<button class="sync-btn danger" onclick="disconnectGcal()">Disconnect</button>' : ''}
       </div>
       <p class="sync-status">${S.items.filter(i=>i.fromGcal).length} GCal events · ${getTasks().filter(i=>!i.fromGcal).length} local tasks</p>
-    </div>
-
-    <div class="sync-card" style="border:${S.flowsavvyMirror?'1.5px solid #10B981':'1px solid #E2E8F0'}">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <h3 style="margin:0">🌊 FlowSavvy Mirror</h3>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <div onclick="toggleFlowSavvyMirror()" style="width:44px;height:24px;border-radius:12px;background:${S.flowsavvyMirror?'#10B981':'#D1D5DB'};position:relative;transition:background .2s;flex-shrink:0">
-            <div style="width:20px;height:20px;border-radius:50%;background:white;position:absolute;top:2px;left:${S.flowsavvyMirror?'22':'2'}px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)"></div>
-          </div>
-          <span style="font-size:13px;font-weight:600;color:${S.flowsavvyMirror?'#059669':'#6B7280'}">${S.flowsavvyMirror?'On':'Off'}</span>
-        </label>
-      </div>
-      <p style="font-size:12px;color:#475569;margin-bottom:8px">Imports tasks from your FlowSavvy GCal calendar into your task list. Reschedules made in FlowSavvy update automatically on next sync.</p>
-      ${S.flowsavvyMirror ? `
-        <div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:8px 10px;font-size:12px;color:#065F46">
-          ✅ Mirroring from: <strong>${S.flowsavvyCalId ? S.flowsavvyCalId.slice(0,40)+'...' : 'detecting...'}</strong><br>
-          📋 ${S.items.filter(i=>i.source==='flowsavvy').length} FlowSavvy tasks in list
-          ${S.flowsavvyLastSync ? '<br>🕐 Last synced: ' + new Date(S.flowsavvyLastSync).toLocaleTimeString() : ''}
-        </div>` : `
-        <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:8px 10px;font-size:12px;color:#64748B">
-          Enable to pull FlowSavvy-scheduled tasks directly into your task list. Requires a calendar named <strong>FlowSavvy</strong> in your Google Calendar.
-        </div>`}
     </div>
 
     <div class="sync-card">
