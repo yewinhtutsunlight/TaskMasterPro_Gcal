@@ -150,6 +150,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 @keyframes spin{to{transform:rotate(360deg)}}
 .toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1E293B;color:#fff;padding:10px 20px;border-radius:30px;font-size:13px;font-weight:600;z-index:999;opacity:0;transition:opacity .3s;pointer-events:none}
 .toast.show{opacity:1}
+.rec-btn{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;font-size:12px;font-weight:600;border-radius:8px;cursor:pointer;border:1px solid #FCA5A5;background:#FEF2F2;color:#DC2626}
+.rec-btn.live{background:#DC2626;color:#fff;border-color:#DC2626}
+.rec-dot{width:8px;height:8px;border-radius:50%;background:#EF4444;flex-shrink:0}
+.rec-btn.live .rec-dot{background:#fff;animation:rec-pulse 1.1s ease-in-out infinite}
+@keyframes rec-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.rec-interim{font-size:12px;color:#94A3B8;font-style:italic;margin-top:6px;padding:0 2px;min-height:16px;line-height:1.4}
+.rec-unsupported{font-size:11px;color:#94A3B8;margin-top:6px;padding:6px 8px;background:#F8FAFC;border-radius:6px}
 </style>
 </head>
 <body>
@@ -955,10 +962,14 @@ const renderMeetingCard = (m, isPast = false) => {
       <textarea id="meeting-notes-${m.id}"
         style="width:100%;padding:9px 10px;border:1px solid #C7D2FE;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;min-height:90px;outline:none;line-height:1.5;color:#1E293B"
         placeholder="Meeting notes, decisions, action items, follow-ups...">${esc(stripHtml(m.notes||''))}</textarea>
-      <div style="display:flex;gap:6px;margin-top:6px">
+      <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center">
         <button class="sync-btn primary" style="padding:5px 14px;font-size:12px" onclick="saveMeetingNotes('${m.id}')">💾 Save Notes</button>
         <button class="sync-btn" style="padding:5px 12px;font-size:12px;background:#F1F5F9;color:#64748B;border:1px solid #E2E8F0" onclick="S.expandedMeetingId=null;render()">Cancel</button>
+        ${micSupported() ? `<button id="rec-btn-${m.id}" class="rec-btn${recMeetingId===m.id?' live':''}" onclick="toggleRecording('${m.id}')">
+          <span class="rec-dot"></span><span id="rec-btn-label-${m.id}">${recMeetingId===m.id?'Stop · 0:00':'🎙️ Record'}</span>
+        </button>` : `<div class="rec-unsupported" style="width:100%">🎙️ Live recording needs Chrome or Edge (not supported in this browser)</div>`}
       </div>
+      ${micSupported() ? `<div id="rec-interim-${m.id}" class="rec-interim"></div>` : ''}
     </div>` : ''}
     <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
       ${!isPast ? `<button class="sync-btn success" style="padding:4px 10px;font-size:11px" onclick="meetingToTask('${m.id}')">+ Follow-up</button>` : ''}
@@ -1831,6 +1842,143 @@ const saveMeetingNotes = async id => {
     showToast('📝 Notes saved');
   }
   render();
+};
+
+// ═══════════════════════════════════════════════
+// LIVE MIC RECORDER — Web Speech API (face-to-face meetings)
+// Free, no API key, Chrome/Edge only. Appends finalized text
+// straight into the meeting notes textarea so it saves/syncs
+// through the existing Save Notes → GCal flow.
+// ═══════════════════════════════════════════════
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recMeetingId = null;   // id of meeting currently recording, or null
+let recognizer = null;
+let recSeconds = 0;
+let recTimerHandle = null;
+let recRestarting = false; // true when we're auto-restarting after a silence timeout, not a real stop
+let recBuffer = '';        // finalized transcript text for the current session — safe even if the notes panel is closed mid-recording
+let recBaseNotes = '';     // whatever was already in the notes field when recording started
+
+const micSupported = () => !!SpeechRec;
+
+const fmtRecTime = s => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+
+const toggleRecording = id => {
+  if (recMeetingId === id) stopRecording();
+  else startRecording(id);
+};
+
+const findMeeting = id => S.meetings.find(i => i.id === id) || (S.pastMeetings || []).find(i => i.id === id);
+
+const startRecording = id => {
+  if (!micSupported()) { showToast('🎙️ Not supported in this browser — use Chrome or Edge'); return; }
+  if (recMeetingId && recMeetingId !== id) stopRecording(); // only one recording at a time
+
+  const m = findMeeting(id);
+  recBaseNotes = (m && m.notes) ? stripHtml(m.notes) : '';
+  recBuffer = '';
+
+  recognizer = new SpeechRec();
+  recognizer.continuous = true;
+  recognizer.interimResults = true;
+  recognizer.lang = 'en-US';
+
+  recognizer.onresult = e => {
+    let finalChunk = '', interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const txt = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalChunk += txt + ' ';
+      else interim += txt;
+    }
+    if (finalChunk) recBuffer += finalChunk;
+
+    // Live-update the textarea only if the notes panel happens to be open —
+    // the source of truth is recBuffer, so nothing is lost if it's closed.
+    const ta = document.getElementById('meeting-notes-' + id);
+    if (ta) ta.value = mergeNotes(recBaseNotes, recBuffer);
+    const cap = document.getElementById('rec-interim-' + id);
+    if (cap) cap.textContent = interim;
+  };
+
+  recognizer.onerror = err => {
+    if (err.error === 'no-speech' || err.error === 'aborted') return; // normal, keep going
+    if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
+      showToast('🎙️ Microphone permission denied');
+      stopRecording();
+    }
+  };
+
+  // Chrome auto-stops the recognizer after a stretch of silence — silently
+  // restart it as long as the user hasn't pressed Stop themselves.
+  recognizer.onend = () => {
+    if (recMeetingId === id && !recRestarting) {
+      recRestarting = true;
+      try { recognizer.start(); } catch(e) {}
+      setTimeout(() => { recRestarting = false; }, 300);
+    }
+  };
+
+  try {
+    recognizer.start();
+  } catch (e) {
+    showToast('🎙️ Could not start microphone');
+    return;
+  }
+
+  recMeetingId = id;
+  recSeconds = 0;
+  updateRecButtonUI(id);
+  recTimerHandle = setInterval(() => { recSeconds++; updateRecButtonUI(id); }, 1000);
+  showToast('🎙️ Recording started — speak naturally');
+};
+
+const mergeNotes = (base, addition) => {
+  const a = (addition || '').trim();
+  if (!a) return base;
+  const sep = base && !base.endsWith('\n') ? '\n' : '';
+  return base + sep + a;
+};
+
+const stopRecording = () => {
+  const id = recMeetingId;
+  if (recognizer) {
+    recRestarting = true; // prevent onend from auto-restarting
+    try { recognizer.stop(); } catch(e) {}
+  }
+  if (recTimerHandle) clearInterval(recTimerHandle);
+  recTimerHandle = null;
+  recMeetingId = null;
+  recognizer = null;
+
+  if (id) {
+    // Flush the buffered transcript straight into the meeting's notes and
+    // save locally, regardless of whether the notes panel is currently open.
+    const m = findMeeting(id);
+    if (m && recBuffer.trim()) {
+      m.notes = mergeNotes(recBaseNotes, recBuffer);
+      saveData();
+    }
+    const ta = document.getElementById('meeting-notes-' + id);
+    if (ta && m) ta.value = stripHtml(m.notes || '');
+    const cap = document.getElementById('rec-interim-' + id);
+    if (cap) cap.textContent = '';
+    showToast('🎙️ Recording stopped · saved locally — tap 💾 Save Notes to sync to GCal');
+  }
+  recBuffer = '';
+  if (id) render();
+};
+
+const updateRecButtonUI = id => {
+  const btn = document.getElementById('rec-btn-' + id);
+  const label = document.getElementById('rec-btn-label-' + id);
+  if (!btn || !label) return; // panel may have been closed/re-rendered
+  if (recMeetingId === id) {
+    btn.classList.add('live');
+    label.textContent = 'Stop · ' + fmtRecTime(recSeconds);
+  } else {
+    btn.classList.remove('live');
+    label.textContent = '🎙️ Record';
+  }
 };
 
 const setMeetingView = v => {
